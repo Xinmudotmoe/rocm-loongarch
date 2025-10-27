@@ -1,0 +1,467 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index de6ed2393..66a159d6e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -143,7 +143,7 @@ endfunction()
+ 
+ # Disable warnings that show up in external code (gtest;pybind11)
+ if(NOT MSVC)
+-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default -fvisibility=hidden")
++  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-covered-switch-default -fvisibility=hidden")
+ else()
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4244 /wd4624 /wd4715 /wd4530")
+ endif()
+@@ -239,7 +239,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
+ 
+     # LLVM
+     LLVMPasses
+-    LLVMNVPTXCodeGen
++#    LLVMNVPTXCodeGen
+     # LLVMNVPTXAsmPrinter
+     LLVMAMDGPUCodeGen
+     LLVMAMDGPUAsmParser
+@@ -265,6 +265,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
+         LLVMPowerPCAsmParser
+         LLVMPowerPCCodeGen
+       )
++  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "loongarch64")
++      list(APPEND TRITON_LIBRARIES
++        LLVMLoongArchAsmParser
++        LLVMLoongArchCodeGen
++      )
+   else()
+     message(FATAL_ERROR "LLVM codegen/ASM parser libs: This HW architecture (${CMAKE_SYSTEM_PROCESSOR}) is not configured in cmake lib dependencies.")
+   endif()
+diff --git a/bin/RegisterTritonDialects.h b/bin/RegisterTritonDialects.h
+index c27d4b6d8..50bc58209 100644
+--- a/bin/RegisterTritonDialects.h
++++ b/bin/RegisterTritonDialects.h
+@@ -39,7 +39,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
+   mlir::registerAllPasses();
+   mlir::registerTritonPasses();
+   mlir::triton::gpu::registerTritonGPUPasses();
+-  mlir::registerTritonNvidiaGPUPasses();
++//  mlir::registerTritonNvidiaGPUPasses();
+   mlir::test::registerTestAliasPass();
+   mlir::test::registerTestAlignmentPass();
+   mlir::test::registerTestAllocationPass();
+@@ -47,9 +47,9 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
+   mlir::triton::registerConvertTritonToTritonGPUPass();
+   mlir::triton::registerAllocateSharedMemoryPass();
+   mlir::triton::registerTritonGPUGlobalScratchAllocationPass();
+-  mlir::triton::registerConvertTritonGPUToLLVMPass();
+-  mlir::triton::registerConvertNVGPUToLLVMPass();
+-  mlir::triton::registerDecomposeUnsupportedNVIDIAConversions();
++//  mlir::triton::registerConvertTritonGPUToLLVMPass();
++//  mlir::triton::registerConvertNVGPUToLLVMPass();
++//  mlir::triton::registerDecomposeUnsupportedNVIDIAConversions();
+   mlir::registerLLVMDIScope();
+ 
+   // TritonAMDGPUToLLVM passes
+@@ -76,7 +76,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
+               mlir::triton::gpu::TritonGPUDialect, mlir::math::MathDialect,
+               mlir::arith::ArithDialect, mlir::scf::SCFDialect,
+               mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect,
+-              mlir::NVVM::NVVMDialect, mlir::triton::nvgpu::NVGPUDialect,
++              mlir::NVVM::NVVMDialect,
++// mlir::triton::nvgpu::NVGPUDialect,
+               mlir::triton::amdgpu::TritonAMDGPUDialect,
+               mlir::triton::proton::ProtonDialect, mlir::ROCDL::ROCDLDialect>();
+ }
+diff --git a/lib/Dialect/Triton/Transforms/LoopUnroll.cpp b/lib/Dialect/Triton/Transforms/LoopUnroll.cpp
+index cb25d41a2..76b849e29 100644
+--- a/lib/Dialect/Triton/Transforms/LoopUnroll.cpp
++++ b/lib/Dialect/Triton/Transforms/LoopUnroll.cpp
+@@ -57,11 +57,13 @@ public:
+       LDBG("Unrolling loop by " << unrollFactor << " times\n" << loop);
+       auto resultLoops = loopUnrollByFactor(loop, unrollFactor);
+       // Do not pipeline the epilog loop.
++#if 0
+       if (succeeded(resultLoops) && resultLoops->epilogueLoopOp) {
+         (*resultLoops->epilogueLoopOp)
+             ->setAttr(pipelineStagesAttrName,
+                       mlir::IntegerAttr::get(IntegerType::get(ctx, 32), 1));
+       }
++#endif
+     }
+   }
+ };
+diff --git a/python/setup.py b/python/setup.py
+index f9fc37553..a05e4ab55 100644
+--- a/python/setup.py
++++ b/python/setup.py
+@@ -415,7 +415,8 @@ class CMakeBuild(build_ext):
+         return [f"-Dpybind11_INCLUDE_DIR='{pybind11_include_dir}'", f"-Dpybind11_DIR='{pybind11.get_cmake_dir()}'"]
+ 
+     def get_proton_cmake_args(self):
+-        cmake_args = get_thirdparty_packages([get_json_package_info()])
++        #cmake_args = get_thirdparty_packages([get_json_package_info()])
++        cmake_args = ['-DJSON_INCLUDE_DIR=/usr/include/nlohmann/', '-DJSON_SYSPATH=/usr']
+         cmake_args += self.get_pybind11_cmake_args()
+         cupti_include_dir = get_env_with_keys(["TRITON_CUPTI_INCLUDE_PATH"])
+         if cupti_include_dir == "":
+@@ -435,7 +436,10 @@ class CMakeBuild(build_ext):
+         lit_dir = shutil.which('lit')
+         ninja_dir = shutil.which('ninja')
+         # lit is used by the test suite
+-        thirdparty_cmake_args = get_thirdparty_packages([get_llvm_package_info()], keep=True)
++        base_dir = get_base_dir()
++        thirdparty_cmake_args = thirdparty_cmake_args = ['-DLLVM_INCLUDE_DIRS='+os.path.join(get_base_dir(),'..','..','..','llvm-usr','include'),
++'-DLLVM_LIBRARY_DIR='+os.path.join(get_base_dir(),'..','..','..','llvm-usr','lib'),
++'-DLLVM_SYSPATH='+os.path.join(get_base_dir(),'..','..','..','llvm-usr'),'-DLLVM_ENABLE_WERROR=0']
+         thirdparty_cmake_args += self.get_pybind11_cmake_args()
+         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.path)))
+         # create build directories
+@@ -533,67 +537,8 @@ def get_platform_dependent_src_path(subdir):
+ 
+ 
+ exe_extension = sysconfig.get_config_var("EXE")
+-download_and_copy(
+-    name="ptxas", src_path=f"bin/ptxas{exe_extension}", dst_path="bin/ptxas", variable="TRITON_PTXAS_PATH",
+-    version=NVIDIA_TOOLCHAIN_VERSION["ptxas"], url_func=lambda system, arch, version:
+-    ((lambda version_major, version_minor1, version_minor2:
+-      f"https://anaconda.org/nvidia/cuda-nvcc-tools/{version}/download/{system}-{arch}/cuda-nvcc-tools-{version}-0.tar.bz2"
+-      if int(version_major) >= 12 and int(version_minor1) >= 5 else
+-      f"https://anaconda.org/nvidia/cuda-nvcc/{version}/download/{system}-{arch}/cuda-nvcc-{version}-0.tar.bz2")
+-     (*version.split('.'))))
+-download_and_copy(
+-    name="cuobjdump",
+-    src_path=f"bin/cuobjdump{exe_extension}",
+-    dst_path="bin/cuobjdump",
+-    variable="TRITON_CUOBJDUMP_PATH",
+-    version=NVIDIA_TOOLCHAIN_VERSION["cuobjdump"],
+-    url_func=lambda system, arch, version:
+-    f"https://anaconda.org/nvidia/cuda-cuobjdump/{version}/download/{system}-{arch}/cuda-cuobjdump-{version}-0.tar.bz2",
+-)
+-download_and_copy(
+-    name="nvdisasm",
+-    src_path=f"bin/nvdisasm{exe_extension}",
+-    dst_path="bin/nvdisasm",
+-    variable="TRITON_NVDISASM_PATH",
+-    version=NVIDIA_TOOLCHAIN_VERSION["nvdisasm"],
+-    url_func=lambda system, arch, version:
+-    f"https://anaconda.org/nvidia/cuda-nvdisasm/{version}/download/{system}-{arch}/cuda-nvdisasm-{version}-0.tar.bz2",
+-)
+-download_and_copy(
+-    name="cudacrt", src_path=get_platform_dependent_src_path("include"), dst_path="include",
+-    variable="TRITON_CUDACRT_PATH", version=NVIDIA_TOOLCHAIN_VERSION["cudacrt"], url_func=lambda system, arch, version:
+-    ((lambda version_major, version_minor1, version_minor2:
+-      f"https://anaconda.org/nvidia/cuda-crt-dev_{system}-{arch}/{version}/download/noarch/cuda-crt-dev_{system}-{arch}-{version}-0.tar.bz2"
+-      if int(version_major) >= 12 and int(version_minor1) >= 5 else
+-      f"https://anaconda.org/nvidia/cuda-nvcc/{version}/download/{system}-{arch}/cuda-nvcc-{version}-0.tar.bz2")
+-     (*version.split('.'))))
+-download_and_copy(
+-    name="cudart", src_path=get_platform_dependent_src_path("include"), dst_path="include",
+-    variable="TRITON_CUDART_PATH", version=NVIDIA_TOOLCHAIN_VERSION["cudart"], url_func=lambda system, arch, version:
+-    ((lambda version_major, version_minor1, version_minor2:
+-      f"https://anaconda.org/nvidia/cuda-cudart-dev_{system}-{arch}/{version}/download/noarch/cuda-cudart-dev_{system}-{arch}-{version}-0.tar.bz2"
+-      if int(version_major) >= 12 and int(version_minor1) >= 5 else
+-      f"https://anaconda.org/nvidia/cuda-cudart-dev/{version}/download/{system}-{arch}/cuda-cudart-dev-{version}-0.tar.bz2"
+-      )(*version.split('.'))))
+-download_and_copy(
+-    name="cupti", src_path=get_platform_dependent_src_path("include"), dst_path="include",
+-    variable="TRITON_CUPTI_INCLUDE_PATH", version=NVIDIA_TOOLCHAIN_VERSION["cupti"],
+-    url_func=lambda system, arch, version:
+-    ((lambda version_major, version_minor1, version_minor2:
+-      f"https://anaconda.org/nvidia/cuda-cupti-dev/{version}/download/{system}-{arch}/cuda-cupti-dev-{version}-0.tar.bz2"
+-      if int(version_major) >= 12 and int(version_minor1) >= 5 else
+-      f"https://anaconda.org/nvidia/cuda-cupti/{version}/download/{system}-{arch}/cuda-cupti-{version}-0.tar.bz2")
+-     (*version.split('.'))))
+-download_and_copy(
+-    name="cupti", src_path=get_platform_dependent_src_path("lib"), dst_path="lib/cupti",
+-    variable="TRITON_CUPTI_LIB_PATH", version=NVIDIA_TOOLCHAIN_VERSION["cupti"], url_func=lambda system, arch, version:
+-    ((lambda version_major, version_minor1, version_minor2:
+-      f"https://anaconda.org/nvidia/cuda-cupti-dev/{version}/download/{system}-{arch}/cuda-cupti-dev-{version}-0.tar.bz2"
+-      if int(version_major) >= 12 and int(version_minor1) >= 5 else
+-      f"https://anaconda.org/nvidia/cuda-cupti/{version}/download/{system}-{arch}/cuda-cupti-{version}-0.tar.bz2")
+-     (*version.split('.'))))
+-
+-backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
++
++backends = [*BackendInstaller.copy(["amd"]), *BackendInstaller.copy_externals()]
+ 
+ 
+ def add_link_to_backends():
+@@ -700,7 +645,7 @@ def get_packages():
+         "triton/runtime",
+         "triton/backends",
+         "triton/tools",
+-        "triton/tools/extra",
++#        "triton/tools/extra",
+     ]
+     packages += [f'triton/backends/{backend.name}' for backend in backends]
+     packages += get_extra_packages("language")
+diff --git a/test/lib/Analysis/TestMembar.cpp b/test/lib/Analysis/TestMembar.cpp
+index 25e8e2d19..3dd651da9 100644
+--- a/test/lib/Analysis/TestMembar.cpp
++++ b/test/lib/Analysis/TestMembar.cpp
+@@ -10,7 +10,7 @@
+ using namespace mlir;
+ 
+ namespace {
+-
++#if 0
+ struct TestMembarPass
+     : public PassWrapper<TestMembarPass, OperationPass<ModuleOp>> {
+ 
+@@ -31,11 +31,15 @@ struct TestMembarPass
+     membarPass.run();
+   }
+ };
+-
++#endif
+ } // namespace
+ 
+ namespace mlir {
+ namespace test {
+-void registerTestMembarPass() { PassRegistration<TestMembarPass>(); }
++void registerTestMembarPass() { 
++#if 0
++PassRegistration<TestMembarPass>();
++#endif
++ }
+ } // namespace test
+ } // namespace mlir
+diff --git a/third_party/nvidia/include/Dialect/NVGPU/IR/Dialect.h b/third_party/nvidia/include/Dialect/NVGPU/IR/Dialect.h
+index 6e238af4f..aa871a730 100644
+--- a/third_party/nvidia/include/Dialect/NVGPU/IR/Dialect.h
++++ b/third_party/nvidia/include/Dialect/NVGPU/IR/Dialect.h
+@@ -29,6 +29,7 @@
+ #include "mlir/Dialect/Tensor/IR/Tensor.h"
+ #include "mlir/IR/BuiltinOps.h"
+ #include "mlir/IR/Dialect.h"
++#if 0
+ #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h.inc"
+ #include "nvidia/include/Dialect/NVGPU/IR/OpsEnums.h.inc"
+ 
+@@ -37,7 +38,7 @@
+ 
+ #define GET_OP_CLASSES
+ #include "nvidia/include/Dialect/NVGPU/IR/Ops.h.inc"
+-
++#endif
+ namespace mlir {
+ namespace triton {
+ namespace nvgpu {} // namespace nvgpu
+diff --git a/third_party/nvidia/include/NVGPUToLLVM/Passes.h b/third_party/nvidia/include/NVGPUToLLVM/Passes.h
+index a2d265356..71f09d9f5 100644
+--- a/third_party/nvidia/include/NVGPUToLLVM/Passes.h
++++ b/third_party/nvidia/include/NVGPUToLLVM/Passes.h
+@@ -7,10 +7,10 @@
+ 
+ namespace mlir {
+ namespace triton {
+-
++#if 0
+ #define GEN_PASS_REGISTRATION
+ #include "nvidia/include/NVGPUToLLVM/Passes.h.inc"
+-
++#endif
+ } // namespace triton
+ } // namespace mlir
+ 
+diff --git a/third_party/nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h b/third_party/nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h
+index 8cd8a180c..20268b9af 100644
+--- a/third_party/nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h
++++ b/third_party/nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h
+@@ -4,7 +4,7 @@
+ #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+ #include "mlir/Pass/Pass.h"
+ #include "mlir/Transforms/DialectConversion.h"
+-
++#if 0
+ #include <memory>
+ 
+ namespace mlir {
+@@ -35,5 +35,5 @@ createConvertTritonGPUToLLVMPass(int32_t computeCapability, int32_t ptxVersion);
+ } // namespace triton
+ 
+ } // namespace mlir
+-
++#endif
+ #endif
+diff --git a/third_party/proton/CMakeLists.txt b/third_party/proton/CMakeLists.txt
+index e0fafb43a..de2327626 100644
+--- a/third_party/proton/CMakeLists.txt
++++ b/third_party/proton/CMakeLists.txt
+@@ -5,9 +5,9 @@ set(PROTON_EXTERN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/extern)
+ file(GLOB_RECURSE PROTON_SRC ${PROTON_SRC_DIR}/lib/*.cpp)
+ add_library(proton SHARED ${PROTON_SRC} ${PROTON_SRC_DIR}/${PROJECT_NAME}.cpp)
+ 
+-if(NOT CUPTI_INCLUDE_DIR)
+-  message(FATAL_ERROR "CUPTI include directory not defined")
+-endif()
++#if(NOT CUPTI_INCLUDE_DIR)
++#  message(FATAL_ERROR "CUPTI include directory not defined")
++#endif()
+ if(NOT ROCTRACER_INCLUDE_DIR)
+   message(FATAL_ERROR "ROCTRACER include directory not defined")
+ endif()
+@@ -29,12 +29,12 @@ if(APPLE)
+   set(PROTON_PYTHON_LDFLAGS "-undefined dynamic_lookup")
+ endif()
+ 
+-if(DEFINED CUPTI_LIB_DIR)
+-  message(STATUS "CUPTI lib directory: ${CUPTI_LIB_DIR}")
+-  add_compile_definitions(CUPTI_LIB_DIR=${CUPTI_LIB_DIR})
+-endif()
++#if(DEFINED CUPTI_LIB_DIR)
++#  message(STATUS "CUPTI lib directory: ${CUPTI_LIB_DIR}")
++#  add_compile_definitions(CUPTI_LIB_DIR=${CUPTI_LIB_DIR})
++#endif()
+ 
+-include_directories(${CUPTI_INCLUDE_DIR})
++#include_directories(${CUPTI_INCLUDE_DIR})
+ include_directories(SYSTEM ${ROCTRACER_INCLUDE_DIR})
+ target_compile_definitions(proton PRIVATE __HIP_PLATFORM_AMD__)
+ 
+diff --git a/third_party/proton/csrc/include/Driver/GPU/CudaApi.h b/third_party/proton/csrc/include/Driver/GPU/CudaApi.h
+index 1178cf5db..88e4b582f 100644
+--- a/third_party/proton/csrc/include/Driver/GPU/CudaApi.h
++++ b/third_party/proton/csrc/include/Driver/GPU/CudaApi.h
+@@ -2,6 +2,7 @@
+ #define PROTON_DRIVER_GPU_CUDA_H_
+ 
+ #include "Driver/Device.h"
++#if 0
+ #include "cuda.h"
+ 
+ namespace proton {
+@@ -24,5 +25,5 @@ Device getDevice(uint64_t index);
+ } // namespace cuda
+ 
+ } // namespace proton
+-
++#endif
+ #endif // PROTON_DRIVER_GPU_CUDA_H_
+diff --git a/third_party/proton/csrc/include/Driver/GPU/CuptiApi.h b/third_party/proton/csrc/include/Driver/GPU/CuptiApi.h
+index 495964923..588331006 100644
+--- a/third_party/proton/csrc/include/Driver/GPU/CuptiApi.h
++++ b/third_party/proton/csrc/include/Driver/GPU/CuptiApi.h
+@@ -1,6 +1,6 @@
+ #ifndef PROTON_DRIVER_GPU_CUPTI_H_
+ #define PROTON_DRIVER_GPU_CUPTI_H_
+-
++#if 0
+ #include "cupti.h"
+ #include "cupti_pcsampling.h"
+ 
+@@ -109,5 +109,5 @@ CUptiResult pcSamplingStop(CUpti_PCSamplingStopParams *pParams);
+ } // namespace cupti
+ 
+ } // namespace proton
+-
++#endif
+ #endif // PROTON_EXTERN_DISPATCH_H_
+diff --git a/third_party/proton/csrc/include/Profiler/Cupti/CuptiPCSampling.h b/third_party/proton/csrc/include/Profiler/Cupti/CuptiPCSampling.h
+index 58b6e2be8..49d0bbef2 100644
+--- a/third_party/proton/csrc/include/Profiler/Cupti/CuptiPCSampling.h
++++ b/third_party/proton/csrc/include/Profiler/Cupti/CuptiPCSampling.h
+@@ -1,6 +1,6 @@
+ #ifndef PROTON_PROFILER_CUPTI_PC_SAMPLING_H_
+ #define PROTON_PROFILER_CUPTI_PC_SAMPLING_H_
+-
++#if 0
+ #include "CuptiProfiler.h"
+ #include "Driver/GPU/CudaApi.h"
+ #include "Driver/GPU/CuptiApi.h"
+@@ -137,5 +137,5 @@ private:
+ };
+ 
+ } // namespace proton
+-
++#endif
+ #endif // PROTON_PROFILER_CUPTI_PC_SAMPLING_H_
+diff --git a/third_party/proton/csrc/lib/Driver/Device.cpp b/third_party/proton/csrc/lib/Driver/Device.cpp
+index 1fb1f2361..a1dc7b5ce 100644
+--- a/third_party/proton/csrc/lib/Driver/Device.cpp
++++ b/third_party/proton/csrc/lib/Driver/Device.cpp
+@@ -7,9 +7,11 @@
+ namespace proton {
+ 
+ Device getDevice(DeviceType type, uint64_t index) {
++#if 0
+   if (type == DeviceType::CUDA) {
+     return cuda::getDevice(index);
+   }
++#endif
+   if (type == DeviceType::HIP) {
+     return hip::getDevice(index);
+   }
+@@ -17,9 +19,12 @@ Device getDevice(DeviceType type, uint64_t index) {
+ }
+ 
+ const std::string getDeviceTypeString(DeviceType type) {
++#if 0
+   if (type == DeviceType::CUDA) {
+     return DeviceTraits<DeviceType::CUDA>::name;
+-  } else if (type == DeviceType::HIP) {
++  }
++#endif
++  if (type == DeviceType::HIP) {
+     return DeviceTraits<DeviceType::HIP>::name;
+   }
+   throw std::runtime_error("DeviceType not supported");
+diff --git a/third_party/proton/csrc/lib/Driver/GPU/CudaApi.cpp b/third_party/proton/csrc/lib/Driver/GPU/CudaApi.cpp
+index d1617b48a..5178a8e42 100644
+--- a/third_party/proton/csrc/lib/Driver/GPU/CudaApi.cpp
++++ b/third_party/proton/csrc/lib/Driver/GPU/CudaApi.cpp
+@@ -1,6 +1,6 @@
+ #include "Driver/GPU/CudaApi.h"
+ #include "Driver/Dispatch.h"
+-
++#if 0
+ namespace proton {
+ 
+ namespace cuda {
+@@ -59,3 +59,4 @@ Device getDevice(uint64_t index) {
+ } // namespace cuda
+ 
+ } // namespace proton
++#endif
+diff --git a/third_party/proton/csrc/lib/Driver/GPU/CuptiApi.cpp b/third_party/proton/csrc/lib/Driver/GPU/CuptiApi.cpp
+index 2c399d31c..c786d4639 100644
+--- a/third_party/proton/csrc/lib/Driver/GPU/CuptiApi.cpp
++++ b/third_party/proton/csrc/lib/Driver/GPU/CuptiApi.cpp
+@@ -1,7 +1,7 @@
+ #include "Driver/GPU/CuptiApi.h"
+ #include "Driver/Device.h"
+ #include "Driver/Dispatch.h"
+-
++#if 0
+ namespace proton {
+ 
+ namespace cupti {
+@@ -119,3 +119,4 @@ DEFINE_DISPATCH(ExternLibCupti, pcSamplingStop, cuptiPCSamplingStop,
+ } // namespace cupti
+ 
+ } // namespace proton
++#endif
+diff --git a/third_party/proton/csrc/lib/Profiler/Cupti/CuptiPCSampling.cpp b/third_party/proton/csrc/lib/Profiler/Cupti/CuptiPCSampling.cpp
+index 45082a14e..80e68b735 100644
+--- a/third_party/proton/csrc/lib/Profiler/Cupti/CuptiPCSampling.cpp
++++ b/third_party/proton/csrc/lib/Profiler/Cupti/CuptiPCSampling.cpp
+@@ -1,3 +1,4 @@
++#if 0
+ #include "Profiler/Cupti/CuptiPCSampling.h"
+ #include "Data/Metric.h"
+ #include "Driver/GPU/CudaApi.h"
+@@ -449,3 +450,4 @@ void CuptiPCSampling::unloadModule(const char *cubin, size_t cubinSize) {
+ }
+ 
+ } // namespace proton
++#endif
+diff --git a/third_party/proton/csrc/lib/Profiler/Cupti/CuptiProfiler.cpp b/third_party/proton/csrc/lib/Profiler/Cupti/CuptiProfiler.cpp
+index fa0ad0bfd..3a4d9c52c 100644
+--- a/third_party/proton/csrc/lib/Profiler/Cupti/CuptiProfiler.cpp
++++ b/third_party/proton/csrc/lib/Profiler/Cupti/CuptiProfiler.cpp
+@@ -1,3 +1,4 @@
++#if 0
+ #include "Profiler/Cupti/CuptiProfiler.h"
+ #include "Context/Context.h"
+ #include "Data/Metric.h"
+@@ -432,3 +433,4 @@ CuptiProfiler::CuptiProfiler() {
+ CuptiProfiler::~CuptiProfiler() = default;
+ 
+ } // namespace proton
++#endif

@@ -1,30 +1,28 @@
 pkgbase='rocm-composable_kernel'
 pkgname=('rocm-composable_kernel')
-pkgver=6.4.2
-pkgrel=642000
+pkgver=7.0.2
+pkgrel=702000
 pkgdesc="rocm-core is a utility which can be used to get ROCm release version."
 arch=('loong64' 'x86_64')
 license=('MIT')
 url="https://github.com/ROCm/ROCT-Thunk-Interface.git"
 
 source=(
-    "git+https://github.com/ROCm/composable_kernel.git#tag=rocm-$pkgver"
-    "git+https://github.com/google/googletest.git"
+    "git+https://github.com/ROCm/rocm-libraries.git#tag=rocm-$pkgver"
     "composable_kernel_loongarch.patch"
 )
-b2sums=('SKIP' 'SKIP' 'SKIP')
+b2sums=('SKIP' 'SKIP')
 depends=(
   "rocm-clr=${pkgver}"
   "rocm-rocBLAS=${pkgver}"
 )
-PATH=/opt/rocm-${pkgver}/bin:$PATH
-
+export PATH=/opt/rocm-${pkgver}/bin:/opt/rocm-${pkgver}/lib/llvm/bin:$PATH
+export ROCM_PATH=/opt/rocm-${pkgver}
 # if set AMDGPU_TARGETS != all
 # MIOpen can not use CK
 #unset AMDGPU_TARGETS
-
 prepare() {
-  cd composable_kernel
+  cd rocm-libraries
     git apply ../composable_kernel_loongarch.patch
   cd ..
   CFLAGS="-fPIC"
@@ -37,28 +35,27 @@ set(CMAKE_INSTALL_RPATH "/opt/rocm-${pkgver}/lib;/opt/rocm-${pkgver}/lib64;/opt/
 set(CMAKE_FIND_ROOT_PATH "/opt/rocm-${pkgver}/")
 set(CMAKE_C_COMPILER "/opt/rocm-${pkgver}/lib/llvm/bin/clang")
 set(CMAKE_CXX_COMPILER "/opt/rocm-${pkgver}/lib/llvm/bin/amdclang++")
-set(CMAKE_HIP_COMPILER "/opt/rocm-${pkgver}/lib/llvm/bin/amdclang++")
 set(CMAKE_SHARED_LINKER_FLAGS "-L/opt/rocm-${pkgver}/lib64")
 set(CMAKE_EXE_LINKER_FLAGS "-L/opt/rocm-${pkgver}/lib64")
 EOF
   mkdir build || true
   cd build
-  cmake ../composable_kernel \
+  cmake ../rocm-libraries/projects/composablekernel/ \
    -DCMAKE_TOOLCHAIN_FILE=$PWD/../toolchain.cmake \
    -DCMAKE_INSTALL_PREFIX=/opt/rocm-${pkgver} \
    -DROCM_WARN_TOOLCHAIN_VAR=OFF \
    -DBUILD_DEV=OFF \
    -DDL_KERNELS=ON \
    -DDPP_KERNELS=ON \
+   -DROCM_WARN_TOOLCHAIN_VAR=OFF \
+   -DROCM_PATH=/opt/rocm-${pkgver} \
    -DCK_USE_FP8_ON_UNSUPPORTED_ARCH=ON \
-   -DAMDGPU_TARGETS=$GPU_TARGETS \
-   -DGPU_TARGETS=$GPU_TARGETS \
    -G Ninja
 #  -G "Unix Makefiles"
 
 }
 build(){
-echo 
+ninja 
 }
 build0() {
   mkdir build || true

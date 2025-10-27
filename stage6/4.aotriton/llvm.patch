@@ -1,0 +1,202 @@
+diff --git a/clang/include/clang/Basic/Builtins.td b/clang/include/clang/Basic/Builtins.td
+index 290feb58754a..c2f862136fcb 100644
+--- a/clang/include/clang/Basic/Builtins.td
++++ b/clang/include/clang/Basic/Builtins.td
+@@ -319,6 +319,13 @@ def NanF128 : Builtin {
+   let Prototype = "__float128(char const*)";
+ }
+ 
++def Nansq : Builtin {
++  let Spellings = ["__builtin_nansq"];
++  let Attributes = [FunctionWithBuiltinPrefix, NoThrow, Pure, Constexpr];
++  let Prototype = "__float128(char const*)";
++}
++
++
+ def Nans : Builtin,
+     Template<["float", "double", "long double", "_Float16", "__float128"],
+              ["f",     "",       "l",           "f16",      "f128"]> {
+diff --git a/clang/lib/AST/ExprConstant.cpp b/clang/lib/AST/ExprConstant.cpp
+index c6a210459240..9f04e953ece9 100644
+--- a/clang/lib/AST/ExprConstant.cpp
++++ b/clang/lib/AST/ExprConstant.cpp
+@@ -15330,6 +15330,7 @@ bool FloatExprEvaluator::VisitCallExpr(const CallExpr *E) {
+   case Builtin::BI__builtin_nansl:
+   case Builtin::BI__builtin_nansf16:
+   case Builtin::BI__builtin_nansf128:
++  case Builtin::BI__builtin_nansq:
+     if (!TryEvaluateBuiltinNaN(Info.Ctx, E->getType(), E->getArg(0),
+                                true, Result))
+       return Error(E);
+diff --git a/clang/lib/Basic/Targets/LoongArch.h b/clang/lib/Basic/Targets/LoongArch.h
+index e5eae7a8fcf6..ffb320d62c29 100644
+--- a/clang/lib/Basic/Targets/LoongArch.h
++++ b/clang/lib/Basic/Targets/LoongArch.h
+@@ -50,6 +50,8 @@ public:
+     SuitableAlign = 128;
+     WCharType = SignedInt;
+     WIntType = UnsignedInt;
++    HasFloat128 = true;
++    HasFloat16 = true;
+   }
+ 
+   bool setCPU(const std::string &Name) override {
+diff --git a/clang/lib/CodeGen/BackendUtil.cpp b/clang/lib/CodeGen/BackendUtil.cpp
+index bf9b04f02e9f..f559d795ada6 100644
+--- a/clang/lib/CodeGen/BackendUtil.cpp
++++ b/clang/lib/CodeGen/BackendUtil.cpp
+@@ -293,6 +293,7 @@ getCodeModel(const CodeGenOptions &CodeGenOpts) {
+                            .Case("kernel", llvm::CodeModel::Kernel)
+                            .Case("medium", llvm::CodeModel::Medium)
+                            .Case("large", llvm::CodeModel::Large)
++                           .Case("extreme", llvm::CodeModel::Large)
+                            .Case("default", ~1u)
+                            .Default(~0u);
+   assert(CodeModel != ~0u && "invalid code model!");
+diff --git a/clang/lib/Driver/ToolChains/HIPUtility.cpp b/clang/lib/Driver/ToolChains/HIPUtility.cpp
+index 3f81c3cb0f80..2c67ddd52a1b 100644
+--- a/clang/lib/Driver/ToolChains/HIPUtility.cpp
++++ b/clang/lib/Driver/ToolChains/HIPUtility.cpp
+@@ -36,7 +36,11 @@ using llvm::dyn_cast;
+ #endif
+ 
+ namespace {
++#if defined(__loongarch_lp64)
++const unsigned HIPCodeObjectAlign = 65536;
++#else
+ const unsigned HIPCodeObjectAlign = 4096;
++#endif
+ } // namespace
+ 
+ // Constructs a triple string for clang offload bundler.
+@@ -291,7 +295,12 @@ void HIP::constructHIPFatbinCommand(Compilation &C, const JobAction &JA,
+ 
+   // ToDo: Remove the dummy host binary entry which is required by
+   // clang-offload-bundler.
++#if defined(__x86_64)
+   std::string BundlerTargetArg = "-targets=host-x86_64-unknown-linux";
++#elif defined(__loongarch64)
++  std::string BundlerTargetArg = "-targets=host-loongarch64-unknown-linux";
++#else
++#endif
+   // AMDGCN:
+   // For code object version 2 and 3, the offload kind in bundle ID is 'hip'
+   // for backward compatibility. For code object version 4 and greater, the
+diff --git a/clang/lib/Driver/ToolChains/Linux.cpp b/clang/lib/Driver/ToolChains/Linux.cpp
+index d1cb62561341..da0f9a4b35fd 100644
+--- a/clang/lib/Driver/ToolChains/Linux.cpp
++++ b/clang/lib/Driver/ToolChains/Linux.cpp
+@@ -746,7 +746,7 @@ void Linux::AddHIPRuntimeLibArgs(const ArgList &Args,
+     CmdArgs.append(
+         {"-rpath", Args.MakeArgString(RocmInstallation->getLibPath())});
+ 
+-  CmdArgs.push_back("-lamdhip64");
++  CmdArgs.push_back("/opt/rocm-6.2.2/lib64/libamdhip64.so");
+ }
+ 
+ void Linux::AddIAMCUIncludeArgs(const ArgList &DriverArgs,
+diff --git a/clang/tools/clang-linker-wrapper/ClangLinkerWrapper.cpp b/clang/tools/clang-linker-wrapper/ClangLinkerWrapper.cpp
+index ebafd7eb7774..aeb4ece121b0 100644
+--- a/clang/tools/clang-linker-wrapper/ClangLinkerWrapper.cpp
++++ b/clang/tools/clang-linker-wrapper/ClangLinkerWrapper.cpp
+@@ -431,15 +431,23 @@ fatbinary(ArrayRef<std::pair<StringRef, StringRef>> InputFiles,
+   SmallVector<StringRef, 16> CmdArgs;
+   CmdArgs.push_back(*OffloadBundlerPath);
+   CmdArgs.push_back("-type=o");
++#if defined(__loongarch64)
++  CmdArgs.push_back("-bundle-align=65536");
++#else
+   CmdArgs.push_back("-bundle-align=4096");
++#endif
+ 
+   if (Args.hasArg(OPT_compress))
+     CmdArgs.push_back("-compress");
+   if (auto *Arg = Args.getLastArg(OPT_compression_level_eq))
+     CmdArgs.push_back(
+         Args.MakeArgString(Twine("-compression-level=") + Arg->getValue()));
+-
++#if defined(__x86_64)
+   SmallVector<StringRef> Targets = {"-targets=host-x86_64-unknown-linux"};
++#elif defined(__loongarch64)
++  SmallVector<StringRef> Targets = {"-targets=host-loongarch64-unknown-linux"};
++#else
++#endif
+   for (const auto &[File, Arch] : InputFiles)
+     Targets.push_back(Saver.save("hip-amdgcn-amd-amdhsa--" + Arch));
+   CmdArgs.push_back(Saver.save(llvm::join(Targets, ",")));
+@@ -594,6 +602,7 @@ Expected<StringRef> linkDevice(ArrayRef<StringRef> InputFiles,
+   case Triple::ppc64:
+   case Triple::ppc64le:
+   case Triple::systemz:
++  case Triple::loongarch64:
+     return generic::clang(InputFiles, Args);
+   default:
+     return createStringError(Triple.getArchName() +
+diff --git a/llvm/lib/Analysis/ConstantFolding.cpp b/llvm/lib/Analysis/ConstantFolding.cpp
+index 1971c28fc4c4..2e3854781699 100644
+--- a/llvm/lib/Analysis/ConstantFolding.cpp
++++ b/llvm/lib/Analysis/ConstantFolding.cpp
+@@ -1853,10 +1853,10 @@ Constant *ConstantFoldFP(double (*NativeFP)(double), const APFloat &V,
+ }
+ 
+ #if defined(HAS_IEE754_FLOAT128) && defined(HAS_LOGF128)
+-Constant *ConstantFoldFP128(float128 (*NativeFP)(float128), const APFloat &V,
++Constant *ConstantFoldFP128(_Float128 (*NativeFP)(_Float128), const APFloat &V,
+                             Type *Ty) {
+   llvm_fenv_clearexcept();
+-  float128 Result = NativeFP(V.convertToQuad());
++  _Float128 Result = NativeFP(V.convertToQuad());
+   if (llvm_fenv_testexcept()) {
+     llvm_fenv_clearexcept();
+     return nullptr;
+diff --git a/llvm/lib/Target/LoongArch/LoongArchISelLowering.cpp b/llvm/lib/Target/LoongArch/LoongArchISelLowering.cpp
+index 1abb428175ee..577bdc9d964b 100644
+--- a/llvm/lib/Target/LoongArch/LoongArchISelLowering.cpp
++++ b/llvm/lib/Target/LoongArch/LoongArchISelLowering.cpp
+@@ -348,6 +348,20 @@ LoongArchTargetLowering::LoongArchTargetLowering(const TargetMachine &TM,
+   setTargetDAGCombine(ISD::SRL);
+   setTargetDAGCombine(ISD::SETCC);
+ 
++  setOperationAction(ISD::FP16_TO_FP,        MVT::f32,   Expand);
++  setOperationAction(ISD::FP_TO_FP16,        MVT::f32,   Expand);
++  setOperationAction(ISD::FP16_TO_FP,        MVT::f64,   Expand);
++  setOperationAction(ISD::FP_TO_FP16,        MVT::f64,   Expand);
++  setOperationAction(ISD::SPLAT_VECTOR, MVT::f16, Custom);
++  setTruncStoreAction(MVT::f32, MVT::f16, Expand);
++
++  setLoadExtAction(ISD::EXTLOAD, MVT::f32, MVT::f16, Expand);
++  setLibcallName(RTLIB::FPEXT_F16_F32, "__extendhfsf2");
++  setLibcallName(RTLIB::FPROUND_F32_F16, "__truncsfhf2");
++  setLoadExtAction(ISD::EXTLOAD, MVT::f64, MVT::f16, Expand);
++  setTruncStoreAction(MVT::f64, MVT::f16, Expand);
++
++
+   // Set DAG combine for 'LSX' feature.
+ 
+   if (Subtarget.hasExtLSX())
+diff --git a/llvm/lib/TargetParser/Host.cpp b/llvm/lib/TargetParser/Host.cpp
+index e0c857b60c40..51d6b7cb9b1f 100644
+--- a/llvm/lib/TargetParser/Host.cpp
++++ b/llvm/lib/TargetParser/Host.cpp
+@@ -2011,7 +2011,7 @@ const StringMap<bool> sys::getHostCPUFeatures() {
+ const StringMap<bool> sys::getHostCPUFeatures() {
+   unsigned long hwcap = getauxval(AT_HWCAP);
+   bool HasFPU = hwcap & (1UL << 3); // HWCAP_LOONGARCH_FPU
+-  const uint32_t cpucfg2 = 0x2, cpucfg3 = 0x3;
++  uint32_t cpucfg2 = 0x2, cpucfg3 = 0x3;
+   __asm__("cpucfg %[cpucfg2], %[cpucfg2]\n\t" : [cpucfg2] "+r"(cpucfg2));
+   __asm__("cpucfg %[cpucfg3], %[cpucfg3]\n\t" : [cpucfg3] "+r"(cpucfg3));
+ 
+diff --git a/mlir/include/mlir/Target/SPIRV/Deserialization.h b/mlir/include/mlir/Target/SPIRV/Deserialization.h
+index e39258beeaac..8daf99a3a107 100644
+--- a/mlir/include/mlir/Target/SPIRV/Deserialization.h
++++ b/mlir/include/mlir/Target/SPIRV/Deserialization.h
+@@ -15,7 +15,7 @@
+ 
+ #include "mlir/IR/OwningOpRef.h"
+ #include "mlir/Support/LLVM.h"
+-
++#include <stdint.h>
+ namespace mlir {
+ class MLIRContext;
+ 

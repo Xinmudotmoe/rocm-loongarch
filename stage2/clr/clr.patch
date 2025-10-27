@@ -1,0 +1,1269 @@
+diff --git a/hipamd/bin/roc-obj-extract b/hipamd/bin/roc-obj-extract
+index 77ca7790a..2da65245e 100755
+--- a/hipamd/bin/roc-obj-extract
++++ b/hipamd/bin/roc-obj-extract
+@@ -74,7 +74,7 @@ my %options=();
+ getopts('vho:', \%options);
+ 
+ # this tool has been deprecated
+-print("Warning: This tool has been DEPRECATED. Similar functionality is provided by llvm-objdump in the rocm-llvm package.\n");
++print(STDERR "Warning: This tool has been DEPRECATED. Similar functionality is provided by llvm-objdump in the rocm-llvm package.\n");
+ 
+ if (defined $options{h}) {
+   usage();
+diff --git a/hipamd/bin/roc-obj-ls b/hipamd/bin/roc-obj-ls
+index eba81d363..0517d5094 100755
+--- a/hipamd/bin/roc-obj-ls
++++ b/hipamd/bin/roc-obj-ls
+@@ -60,7 +60,7 @@ if (defined $options{h}) {
+ }
+ 
+ # this tool has been deprecated
+-print("Warning:  This tool has been DEPRECATED. Similar functionality is provided by llvm-objdump in the rocm-llvm package.\n");
++print(STDERR "Warning:  This tool has been DEPRECATED. Similar functionality is provided by llvm-objdump in the rocm-llvm package.\n");
+ 
+ my $verbose = $options{v};
+ my $debug = $options{d};
+diff --git a/hipamd/include/hip/amd_detail/amd_hip_cooperative_groups.h b/hipamd/include/hip/amd_detail/amd_hip_cooperative_groups.h
+index 1e727fe87..55a0a60dc 100644
+--- a/hipamd/include/hip/amd_detail/amd_hip_cooperative_groups.h
++++ b/hipamd/include/hip/amd_detail/amd_hip_cooperative_groups.h
+@@ -668,7 +668,9 @@ template <unsigned int size> class thread_block_tile_base : public tile_base<siz
+ #ifdef HIP_ENABLE_WARP_SYNC_BUILTINS
+   __CG_QUALIFIER__ unsigned long long build_mask() const {
+     unsigned long long mask = ~0ull >> (64 - numThreads);
+-    return mask << ((internal::workgroup::thread_rank() / numThreads) * numThreads);
++    // thread_rank() gives thread id from 0..thread launch size.
++    return mask << (((internal::workgroup::thread_rank() % warpSize) / numThreads) *
++                    numThreads);
+   }
+ #endif
+ 
+diff --git a/hipamd/include/hip/amd_detail/hip_api_trace.hpp b/hipamd/include/hip/amd_detail/hip_api_trace.hpp
+index f0785058c..c93dc723d 100644
+--- a/hipamd/include/hip/amd_detail/hip_api_trace.hpp
++++ b/hipamd/include/hip/amd_detail/hip_api_trace.hpp
+@@ -63,7 +63,7 @@
+ #define HIP_API_TABLE_STEP_VERSION 0
+ #define HIP_COMPILER_API_TABLE_STEP_VERSION 0
+ #define HIP_TOOLS_API_TABLE_STEP_VERSION 0
+-#define HIP_RUNTIME_API_TABLE_STEP_VERSION 9
++#define HIP_RUNTIME_API_TABLE_STEP_VERSION 10
+ 
+ // HIP API interface
+ // HIP compiler dispatch functions
+@@ -1035,6 +1035,8 @@ typedef hipError_t (*t_hipGraphBatchMemOpNodeSetParams)(hipGraphNode_t hNode,
+                                                         hipBatchMemOpNodeParams* nodeParams);
+ typedef hipError_t (*t_hipGraphExecBatchMemOpNodeSetParams)(
+     hipGraphExec_t hGraphExec, hipGraphNode_t hNode, const hipBatchMemOpNodeParams* nodeParams);
++typedef hipError_t (*t_hipEventRecordWithFlags)(hipEvent_t event, hipStream_t stream, unsigned int flags);
++
+ // HIP Compiler dispatch table
+ struct HipCompilerDispatchTable {
+   // HIP_COMPILER_API_TABLE_STEP_VERSION == 0
+@@ -1566,8 +1568,11 @@ struct HipDispatchTable {
+   t_hipLinkCreate hipLinkCreate_fn;
+   t_hipLinkDestroy hipLinkDestroy_fn;
+ 
++  // HIP_RUNTIME_API_TABLE_STEP_VERSION == 10
++  t_hipEventRecordWithFlags hipEventRecordWithFlags_fn;
++
+   // DO NOT EDIT ABOVE!
+-  // HIP_RUNTIME_API_TABLE_STEP_VERSION == 9
++  // HIP_RUNTIME_API_TABLE_STEP_VERSION == 10
+ 
+   // ******************************************************************************************* //
+   //
+diff --git a/hipamd/include/hip/amd_detail/hip_prof_str.h b/hipamd/include/hip/amd_detail/hip_prof_str.h
+index 85ee9e6dd..7ced24db5 100644
+--- a/hipamd/include/hip/amd_detail/hip_prof_str.h
++++ b/hipamd/include/hip/amd_detail/hip_prof_str.h
+@@ -4142,6 +4142,9 @@ typedef struct hip_api_data_s {
+ };
+ // hipEventRecordWithFlags[('hipEvent_t', 'event'), ('hipStream_t', 'stream'), ('unsigned int', 'flags')]
+ #define INIT_hipEventRecordWithFlags_CB_ARGS_DATA(cb_data) { \
++  cb_data.args.hipEventRecordWithFlags.event = (hipEvent_t)event; \
++  cb_data.args.hipEventRecordWithFlags.stream = (hipStream_t)stream; \
++  cb_data.args.hipEventRecordWithFlags.flags = (unsigned int)flags; \
+ };
+ // hipEventSynchronize[('hipEvent_t', 'event')]
+ #define INIT_hipEventSynchronize_CB_ARGS_DATA(cb_data) { \
+diff --git a/hipamd/packaging/CMakeLists.txt b/hipamd/packaging/CMakeLists.txt
+index ef62e0008..f0f5e041e 100644
+--- a/hipamd/packaging/CMakeLists.txt
++++ b/hipamd/packaging/CMakeLists.txt
+@@ -198,7 +198,15 @@ if(HIP_ENABLE_ROCPROFILER_REGISTER)
+    set(HIP_RUNTIME_ROCM_PKG_DEPENDENCIES "${HIP_RUNTIME_ROCM_PKG_DEPENDENCIES}, rocprofiler-register")
+ endif()
+ 
+-set(HIP_RUNTIME_DEB_STDPKG_DEPENDENCIES "libnuma1, libstdc++6, libgcc-s1, libc6")
++set(HIP_RUNTIME_DEB_STDPKG_DEPENDENCIES "libnuma1, libstdc++6, libc6")
++
++if(DEB10_DISTRO)
++  # On Debian Buster only: libgcc_s.so.1 is in the package libgcc1
++  set(HIP_RUNTIME_DEB_STDPKG_DEPENDENCIES "${HIP_RUNTIME_DEB_STDPKG_DEPENDENCIES}, libgcc1")
++else()
++  set(HIP_RUNTIME_DEB_STDPKG_DEPENDENCIES "${HIP_RUNTIME_DEB_STDPKG_DEPENDENCIES}, libgcc-s1")
++endif()
++
+ set(CPACK_DEBIAN_BINARY_PACKAGE_DEPENDS "${HIP_RUNTIME_ROCM_PKG_DEPENDENCIES}, ${HIP_RUNTIME_DEB_STDPKG_DEPENDENCIES}")
+ 
+ set(CPACK_DEBIAN_BINARY_PACKAGE_PROVIDES "hip-rocclr (= ${CPACK_PACKAGE_VERSION})")
+@@ -224,6 +232,7 @@ else()
+     set(HIP_RUNTIME_RPM_STDPKG_DEPENDENCIES "${HIP_RUNTIME_RPM_STDPKG_DEPENDENCIES}, (libgcc or libgcc_s1)" )
+   endif()
+ endif()
++
+ set(CPACK_RPM_BINARY_PACKAGE_REQUIRES "${HIP_RUNTIME_ROCM_PKG_DEPENDENCIES}, ${HIP_RUNTIME_RPM_STDPKG_DEPENDENCIES}")
+ 
+ set(CPACK_RPM_BINARY_PACKAGE_PROVIDES "hip-rocclr = ${HIP_BASE_VERSION}")
+diff --git a/hipamd/src/amdhip.def b/hipamd/src/amdhip.def
+index 83a6c4aa7..af3843cf2 100644
+--- a/hipamd/src/amdhip.def
++++ b/hipamd/src/amdhip.def
+@@ -488,4 +488,4 @@ hipLinkAddData
+ hipLinkAddFile
+ hipLinkComplete
+ hipLinkCreate
+-hipLinkDestroy
+\ No newline at end of file
++hipLinkDestroyhipEventRecordWithFlags
+diff --git a/hipamd/src/hip_api_trace.cpp b/hipamd/src/hip_api_trace.cpp
+index 07510828b..414cccb63 100644
+--- a/hipamd/src/hip_api_trace.cpp
++++ b/hipamd/src/hip_api_trace.cpp
+@@ -822,6 +822,7 @@ hipError_t hipGraphBatchMemOpNodeSetParams(hipGraphNode_t hNode,
+                                            hipBatchMemOpNodeParams* nodeParams);
+ hipError_t hipGraphExecBatchMemOpNodeSetParams(hipGraphExec_t hGraphExec, hipGraphNode_t hNode,
+                                                const hipBatchMemOpNodeParams* nodeParams);
++hipError_t hipEventRecordWithFlags(hipEvent_t event, hipStream_t stream, unsigned flags);
+ }  // namespace hip
+ 
+ namespace hip {
+@@ -1333,6 +1334,7 @@ void UpdateDispatchTable(HipDispatchTable* ptrDispatchTable) {
+   ptrDispatchTable->hipGraphBatchMemOpNodeSetParams_fn = hip::hipGraphBatchMemOpNodeSetParams;
+   ptrDispatchTable->hipGraphExecBatchMemOpNodeSetParams_fn =
+       hip::hipGraphExecBatchMemOpNodeSetParams;
++  ptrDispatchTable->hipEventRecordWithFlags_fn = hip::hipEventRecordWithFlags;
+ }
+ 
+ #if HIP_ROCPROFILER_REGISTER > 0
+@@ -1956,16 +1958,17 @@ HIP_ENFORCE_ABI(HipDispatchTable, hipLinkAddData_fn , 468)
+ HIP_ENFORCE_ABI(HipDispatchTable, hipLinkAddFile_fn , 469)
+ HIP_ENFORCE_ABI(HipDispatchTable, hipLinkComplete_fn , 470)
+ HIP_ENFORCE_ABI(HipDispatchTable, hipLinkCreate_fn , 471)
+-HIP_ENFORCE_ABI(HipDispatchTable, hipLinkDestroy_fn , 472)
++HIP_ENFORCE_ABI(HipDispatchTable, hipLinkDestroy_fn , 472)// HIP_RUNTIME_API_TABLE_STEP_VERSION == 9
++HIP_ENFORCE_ABI(HipDispatchTable, hipEventRecordWithFlags_fn, 473)
+ // if HIP_ENFORCE_ABI entries are added for each new function pointer in the table, the number below
+ // will be +1 of the number in the last HIP_ENFORCE_ABI line. E.g.:
+ //
+ //  HIP_ENFORCE_ABI(<table>, <functor>, 8)
+ //
+ //  HIP_ENFORCE_ABI_VERSIONING(<table>, 9) <- 8 + 1 = 9
+-HIP_ENFORCE_ABI_VERSIONING(HipDispatchTable, 473)
++HIP_ENFORCE_ABI_VERSIONING(HipDispatchTable, 474)
+ 
+-static_assert(HIP_RUNTIME_API_TABLE_MAJOR_VERSION == 0 && HIP_RUNTIME_API_TABLE_STEP_VERSION == 9,
++static_assert(HIP_RUNTIME_API_TABLE_MAJOR_VERSION == 0 && HIP_RUNTIME_API_TABLE_STEP_VERSION == 10,
+               "If you get this error, add new HIP_ENFORCE_ABI(...) code for the new function "
+               "pointers and then update this check so it is true");
+ #endif
+diff --git a/hipamd/src/hip_event.cpp b/hipamd/src/hip_event.cpp
+index d68778d24..e741dfa78 100644
+--- a/hipamd/src/hip_event.cpp
++++ b/hipamd/src/hip_event.cpp
+@@ -19,8 +19,9 @@
+  THE SOFTWARE. */
+ 
+ #include <hip/hip_runtime.h>
+-
+ #include "hip_event.hpp"
++#include "hip_graph_internal.hpp"
++
+ #if !defined(_MSC_VER)
+ #include <unistd.h>
+ #endif
+@@ -394,7 +395,10 @@ hipError_t hipEventElapsedTime(float* ms, hipEvent_t start, hipEvent_t stop) {
+   HIP_RETURN(eStart->elapsedTime(*eStop, *ms), "Elapsed Time = ", *ms);
+ }
+ 
+-hipError_t hipEventRecord_common(hipEvent_t event, hipStream_t stream) {
++hipError_t hipEventRecord_common(hipEvent_t event, hipStream_t stream, unsigned int flags) {
++  if (!(flags == hipEventRecordDefault || flags == hipEventRecordExternal)){
++    return hipErrorInvalidValue;
++  }
+   hipError_t status = hipSuccess;
+   if (event == nullptr) {
+     return hipErrorInvalidHandle;
+@@ -413,7 +417,21 @@ hipError_t hipEventRecord_common(hipEvent_t event, hipStream_t stream) {
+         "[hipGraph] Current capture node EventRecord on stream : %p, Event %p", stream, event);
+     s->SetCaptureEvent(event);
+     std::vector<hip::GraphNode*> lastCapturedNodes = s->GetLastCapturedNodes();
+-    e->SetNodesPrevToRecorded(lastCapturedNodes);
++    if (!lastCapturedNodes.empty()) {
++      e->SetNodesPrevToRecorded(lastCapturedNodes);
++    }
++    if (flags == hipEventRecordExternal) {
++      hip::GraphNode* node = new hip::GraphEventRecordNode(reinterpret_cast<hipEvent_t>(e));
++      hipError_t status = hip::ihipGraphAddNode(node, 
++                      reinterpret_cast<hip::Graph*>(s->GetCaptureGraph()),
++                      reinterpret_cast<hip::GraphNode* const*>(s->GetLastCapturedNodes().data()),
++                      s->GetLastCapturedNodes().size(), false);
++      if (status != hipSuccess) {
++        ClPrint(amd::LOG_ERROR, amd::LOG_API, "hipEventRecord add external event node failed");
++        return status;
++      }
++      s->SetLastCapturedNode(node);
++    }
+   } else {
+     if (g_devices[e->deviceId()]->devices()[0] != &hip_stream->device()) {
+       return hipErrorInvalidHandle;
+@@ -425,13 +443,18 @@ hipError_t hipEventRecord_common(hipEvent_t event, hipStream_t stream) {
+ 
+ hipError_t hipEventRecord(hipEvent_t event, hipStream_t stream) {
+   HIP_INIT_API(hipEventRecord, event, stream);
+-  HIP_RETURN(hipEventRecord_common(event, stream));
++  HIP_RETURN(hipEventRecord_common(event, stream, hipEventRecordDefault));
+ }
+ 
+ hipError_t hipEventRecord_spt(hipEvent_t event, hipStream_t stream) {
+   HIP_INIT_API(hipEventRecord, event, stream);
+   PER_THREAD_DEFAULT_STREAM(stream);
+-  HIP_RETURN(hipEventRecord_common(event, stream));
++  HIP_RETURN(hipEventRecord_common(event, stream, hipEventRecordDefault));
++}
++
++hipError_t hipEventRecordWithFlags(hipEvent_t event, hipStream_t stream, unsigned int flags) {
++  HIP_INIT_API(hipEventRecordWithFlags, event, stream, flags);
++  HIP_RETURN(hipEventRecord_common(event, stream, flags));
+ }
+ 
+ hipError_t hipEventSynchronize(hipEvent_t event) {
+diff --git a/hipamd/src/hip_fatbin.cpp b/hipamd/src/hip_fatbin.cpp
+index 9c26b4eef..2515fc195 100644
+--- a/hipamd/src/hip_fatbin.cpp
++++ b/hipamd/src/hip_fatbin.cpp
+@@ -206,7 +206,7 @@ hipError_t FatBinaryInfo::ExtractFatBinaryUsingCOMGR(const std::vector<hip::Devi
+ 
+   // If file name & path are available (or it is passed to you), then get the file desc to use
+   // COMGR file slice APIs.
+-  if (fname_.size() > 0) {
++  if (image_ == nullptr && fname_.size() > 0) {
+     // Get File Handle & size of the file.
+     ufd_ = PlatformState::instance().GetUniqueFileHandle(fname_.c_str());
+     if (ufd_ == nullptr) {
+@@ -219,14 +219,13 @@ hipError_t FatBinaryInfo::ExtractFatBinaryUsingCOMGR(const std::vector<hip::Devi
+     }
+ 
+     // If image_ is nullptr, then file path is passed via hipMod* APIs, so map the file.
+-    if (image_ == nullptr) {
+-      if (!amd::Os::MemoryMapFileDesc(ufd_->fdesc_, ufd_->fsize_, foffset_, &image_)) {
+-        LogError("Cannot map the file descriptor");
+-        PlatformState::instance().CloseUniqueFileHandle(ufd_);
+-        return hipErrorInvalidValue;
+-      }
+-      image_mapped_ = true;
++    if (!amd::Os::MemoryMapFileDesc(ufd_->fdesc_, ufd_->fsize_, foffset_, &image_)) {
++      LogError("Cannot map the file descriptor");
++      PlatformState::instance().CloseUniqueFileHandle(ufd_);
++      return hipErrorInvalidValue;
+     }
++
++    image_mapped_ = true;
+   }
+ 
+   // At this line, image should be a valid ptr.
+diff --git a/hipamd/src/hip_graph.cpp b/hipamd/src/hip_graph.cpp
+index e45b94802..9e763e65f 100644
+--- a/hipamd/src/hip_graph.cpp
++++ b/hipamd/src/hip_graph.cpp
+@@ -1483,6 +1483,8 @@ hipError_t hipGraphExecDestroy(hipGraphExec_t pGraphExec) {
+   }
+   hip::GraphExec* ge = reinterpret_cast<hip::GraphExec*>(pGraphExec);
+   ge->release();
++  amd::ScopedLock lock(GraphExec::graphExecSetLock_);
++  GraphExec::graphExecSet_.erase(ge);
+   HIP_RETURN(hipSuccess);
+ }
+ 
+diff --git a/hipamd/src/hip_graph_internal.cpp b/hipamd/src/hip_graph_internal.cpp
+index 4fa163655..e88454e12 100644
+--- a/hipamd/src/hip_graph_internal.cpp
++++ b/hipamd/src/hip_graph_internal.cpp
+@@ -359,6 +359,7 @@ hipError_t GraphExec::Init() {
+     status = CaptureAQLPackets();
+   }
+   instantiateDeviceId_ = hip::getCurrentDevice()->deviceId();
++  static_cast<ReferenceCountedObject*>( hip::getCurrentDevice())->retain();
+   return status;
+ }
+ 
+@@ -728,21 +729,11 @@ hipError_t GraphExec::Run(hipStream_t graph_launch_stream) {
+   // we may not need to flush any caches.
+   CallbackCommand->setEventScope(amd::Device::kCacheStateIgnore);
+   amd::Event& event = CallbackCommand->event();
+-  if (!event.setCallback(CL_COMPLETE, GraphExec::DecrementRefCount, this)) {
++  constexpr bool kBlocking = false;
++  if (!event.setCallback(CL_COMPLETE, GraphExec::DecrementRefCount, this, kBlocking)) {
+     return hipErrorInvalidHandle;
+   }
+   CallbackCommand->enqueue();
+-  // Add the new barrier to stall the stream, until the callback is done
+-  amd::Command::EventWaitList eventWaitList;
+-  eventWaitList.push_back(CallbackCommand);
+-  amd::Command* block_command = new amd::Marker(*launch_stream, kMarkerDisableFlush, eventWaitList);
+-  // we may not need to flush any caches.
+-  block_command->setEventScope(amd::Device::kCacheStateIgnore);
+-  if (block_command == nullptr) {
+-    return hipErrorInvalidValue;
+-  }
+-  block_command->enqueue();
+-  block_command->release();
+   CallbackCommand->release();
+   ResetQueueIndex();
+   return status;
+diff --git a/hipamd/src/hip_graph_internal.hpp b/hipamd/src/hip_graph_internal.hpp
+index 2b1fbc445..a7a88501f 100644
+--- a/hipamd/src/hip_graph_internal.hpp
++++ b/hipamd/src/hip_graph_internal.hpp
+@@ -46,6 +46,9 @@ struct GraphNode;
+ struct GraphExec;
+ struct UserObject;
+ typedef GraphNode* Node;
++hipError_t ihipGraphAddNode(hip::GraphNode* graphNode, hip::Graph* graph,
++                                   hip::GraphNode* const* pDependencies, size_t numDependencies,
++                                   bool capture);
+ struct UserObject : public amd::ReferenceCountedObject {
+   typedef void (*UserCallbackDestructor)(void* data);
+   static std::unordered_set<UserObject*> ObjectSet_;
+@@ -465,6 +468,59 @@ struct GraphNode : public hipGraphNodeDOTAttribute {
+   }
+ };
+ 
++class GraphEventWaitNode : public GraphNode {
++  hipEvent_t event_;
++
++ public:
++  GraphEventWaitNode(hipEvent_t event)
++      : GraphNode(hipGraphNodeTypeWaitEvent, "solid", "rectangle", "EVENT_WAIT"),
++        event_(event) {}
++  ~GraphEventWaitNode() {}
++
++  GraphNode* clone() const override {
++    return new GraphEventWaitNode(static_cast<GraphEventWaitNode const&>(*this));
++  }
++
++  hipError_t CreateCommand(hip::Stream* stream) override {
++    hipError_t status = GraphNode::CreateCommand(stream);
++    if (status != hipSuccess) {
++      return status;
++    }
++    hip::Event* e = reinterpret_cast<hip::Event*>(event_);
++    commands_.reserve(1);
++    amd::Command* command;
++    status = e->streamWaitCommand(command, stream);
++    commands_.emplace_back(command);
++    return status;
++  }
++
++  void EnqueueCommands(hip::Stream* stream) override {
++    if (!commands_.empty()) {
++      hip::Event* e = reinterpret_cast<hip::Event*>(event_);
++      hipError_t status =
++        e->enqueueStreamWaitCommand(reinterpret_cast<hipStream_t>(stream), commands_[0]);
++      if (status != hipSuccess) {
++        ClPrint(amd::LOG_ERROR, amd::LOG_CODE,
++                "[hipGraph] Enqueue stream wait command failed for node %p - status %d", this,
++                status);
++      }
++      commands_[0]->release();
++    }
++  }
++
++  void GetParams(hipEvent_t* event) const { *event = event_; }
++
++  hipError_t SetParams(hipEvent_t event) {
++    event_ = event;
++    return hipSuccess;
++  }
++
++  hipError_t SetParams(GraphNode* node) override {
++    const GraphEventWaitNode* eventWaitNode = static_cast<GraphEventWaitNode const*>(node);
++    return SetParams(eventWaitNode->event_);
++  }
++};
++
+ struct Graph {
+   // Mark GraphExec as friend for faster access to the Graph fields.
+   // (@todo GrpahExec should be derived from Graph)
+@@ -499,7 +555,6 @@ struct Graph {
+     amd::ScopedLock lock(graphSetLock_);
+     graphSet_.insert(this);
+     mem_pool_ = device->GetGraphMemoryPool();
+-    mem_pool_->retain();
+     graphInstantiated_ = false;
+     roots_.resize(DEBUG_HIP_FORCE_GRAPH_QUEUES);
+     leafs_.resize(DEBUG_HIP_FORCE_GRAPH_QUEUES);
+@@ -537,9 +592,6 @@ struct Graph {
+       }
+     }
+     graphUserObj_.clear();
+-    if (mem_pool_ != nullptr) {
+-      mem_pool_->release();
+-    }
+     memAllocNodePtrs_.clear();
+   }
+ 
+@@ -547,6 +599,16 @@ struct Graph {
+ 
+   std::unordered_set<GraphNode*> GetManualNodesDuringCapture() { return capturedNodes_; }
+ 
++  GraphNode* AddExternalEventWaitNode(hip::GraphNode* pDependencies, size_t numDependencies,
++    hipEvent_t event) {
++    GraphNode* node = new GraphEventWaitNode(event);
++    for (size_t i = 0; i < numDependencies; i++) {
++      pDependencies[i].AddEdgeDep(node);
++    }
++    AddNode(node);
++    return node;
++  }
++
+   void RemoveManualNodesDuringCapture() {
+     capturedNodes_.erase(capturedNodes_.begin(), capturedNodes_.end());
+   }
+@@ -761,18 +823,19 @@ struct GraphExec : public amd::ReferenceCountedObject {
+   ~GraphExec() {
+     for (auto stream : parallel_streams_) {
+       if (stream != nullptr) {
+-        stream->finish();
+-        hip::Stream::Destroy(stream);
++        constexpr bool kForceDestroy = true;
++        hip::Stream::Destroy(stream, kForceDestroy);
+       }
+     }
+-    amd::ScopedLock lock(graphExecSetLock_);
+-    graphExecSet_.erase(this);
+     delete clonedGraph_;
+     if (DEBUG_CLR_GRAPH_PACKET_CAPTURE) {
+       if (kernArgManager_ != nullptr) {
+         kernArgManager_->release();
+       }
+     }
++    if (instantiateDeviceId_ != -1) {
++      static_cast<ReferenceCountedObject*>(g_devices[instantiateDeviceId_])->release();
++    }
+   }
+ 
+   Node GetClonedNode(Node node) {
+@@ -2146,59 +2209,6 @@ class GraphEventRecordNode : public GraphNode {
+   }
+ };
+ 
+-class GraphEventWaitNode : public GraphNode {
+-  hipEvent_t event_;
+-
+- public:
+-  GraphEventWaitNode(hipEvent_t event)
+-      : GraphNode(hipGraphNodeTypeWaitEvent, "solid", "rectangle", "EVENT_WAIT"),
+-        event_(event) {}
+-  ~GraphEventWaitNode() {}
+-
+-  GraphNode* clone() const override {
+-    return new GraphEventWaitNode(static_cast<GraphEventWaitNode const&>(*this));
+-  }
+-
+-  hipError_t CreateCommand(hip::Stream* stream) override {
+-    hipError_t status = GraphNode::CreateCommand(stream);
+-    if (status != hipSuccess) {
+-      return status;
+-    }
+-    hip::Event* e = reinterpret_cast<hip::Event*>(event_);
+-    commands_.reserve(1);
+-    amd::Command* command;
+-    status = e->streamWaitCommand(command, stream);
+-    commands_.emplace_back(command);
+-    return status;
+-  }
+-
+-  void EnqueueCommands(hip::Stream* stream) override {
+-    if (!commands_.empty()) {
+-      hip::Event* e = reinterpret_cast<hip::Event*>(event_);
+-      hipError_t status =
+-        e->enqueueStreamWaitCommand(reinterpret_cast<hipStream_t>(stream), commands_[0]);
+-      if (status != hipSuccess) {
+-        ClPrint(amd::LOG_ERROR, amd::LOG_CODE,
+-                "[hipGraph] Enqueue stream wait command failed for node %p - status %d", this,
+-                status);
+-      }
+-      commands_[0]->release();
+-    }
+-  }
+-
+-  void GetParams(hipEvent_t* event) const { *event = event_; }
+-
+-  hipError_t SetParams(hipEvent_t event) {
+-    event_ = event;
+-    return hipSuccess;
+-  }
+-
+-  hipError_t SetParams(GraphNode* node) override {
+-    const GraphEventWaitNode* eventWaitNode = static_cast<GraphEventWaitNode const*>(node);
+-    return SetParams(eventWaitNode->event_);
+-  }
+-};
+-
+ class GraphHostNode : public GraphNode {
+   hipHostNodeParams NodeParams_;
+ 
+@@ -2333,10 +2343,6 @@ class GraphMemAllocNode final : public GraphNode {
+       memory_ = getMemoryObject(dptr, offset);
+       // Retain memory object because command release will release it
+       memory_->retain();
+-
+-      // Remove because the entry is not needed in MemObjMap after the memory_ has been saved.
+-      // The Phy mem obj will be saved in virtual memory object during VirtualMapCommand::submit.
+-      amd::MemObjMap::RemoveMemObj(dptr);
+       size_ = aligned_size;
+       // Execute the original mapping command
+       VirtualMapCommand::submit(device);
+diff --git a/hipamd/src/hip_hcc.map.in b/hipamd/src/hip_hcc.map.in
+index 4caa285d9..6c40a7862 100644
+--- a/hipamd/src/hip_hcc.map.in
++++ b/hipamd/src/hip_hcc.map.in
+@@ -592,6 +592,7 @@ global:
+     hipLinkComplete;
+     hipLinkCreate;
+     hipLinkDestroy;
++    hipEventRecordWithFlags;
+ local:
+     *;
+ } hip_6.2;
+diff --git a/hipamd/src/hip_internal.hpp b/hipamd/src/hip_internal.hpp
+index bcbc36e87..250ddec44 100644
+--- a/hipamd/src/hip_internal.hpp
++++ b/hipamd/src/hip_internal.hpp
+@@ -372,7 +372,7 @@ public:
+     /// Check whether any blocking stream running
+     static bool StreamCaptureBlocking();
+ 
+-    static void Destroy(hip::Stream* stream);
++    static void Destroy(hip::Stream* stream, bool forceDestroy = false);
+ 
+     virtual bool terminate();
+ 
+diff --git a/hipamd/src/hip_memory.cpp b/hipamd/src/hip_memory.cpp
+index d64bfe7f7..1a9d06edc 100644
+--- a/hipamd/src/hip_memory.cpp
++++ b/hipamd/src/hip_memory.cpp
+@@ -343,11 +343,11 @@ hipError_t ihipMalloc(void** ptr, size_t sizeBytes, unsigned int flags)
+   const auto& dev_info = amdContext->devices()[0]->info();
+   hip::getCurrentDevice()->SetActiveStatus();
+ 
+-  if (dev_info.maxPhysicalMemAllocSize_ < sizeBytes) {
+-    return hipErrorOutOfMemory;
+-  }
+-  // PAL allocates from system memory if needed
+-  if (IS_LINUX && !useHostDevice && (dev_info.maxMemAllocSize_ < sizeBytes)) {
++  size_t max_device_size = IS_LINUX ? dev_info.maxMemAllocSize_ :
++                           (dev_info.maxMemAllocSize_ +  dev_info.maxPhysicalMemAllocSize_);
++
++  if ((useHostDevice && dev_info.maxPhysicalMemAllocSize_ < sizeBytes) ||
++     (!useHostDevice && max_device_size < sizeBytes)) {
+     return hipErrorOutOfMemory;
+   }
+ 
+@@ -3935,7 +3935,17 @@ hipError_t ihipPointerGetAttributes(void* data, hipPointer_attribute attribute,
+ 
+     switch (attribute) {
+       case HIP_POINTER_ATTRIBUTE_CONTEXT : {
+-        status = hipErrorNotSupported;
++        if (memObj) {
++          amd::Context& context = memObj->getContext();
++          int devId = getDeviceID(context);
++          if (devId >= 0) {
++            *reinterpret_cast<hipCtx_t*>(data) = reinterpret_cast<hipCtx_t>(g_devices[devId]);
++          } else {
++            return hipErrorInvalidValue;
++          }
++        } else {
++          return hipErrorInvalidValue;
++        }
+         break;
+       }
+       case HIP_POINTER_ATTRIBUTE_MEMORY_TYPE : {
+diff --git a/hipamd/src/hip_mempool_impl.cpp b/hipamd/src/hip_mempool_impl.cpp
+index bb2b839ff..1a87701fa 100644
+--- a/hipamd/src/hip_mempool_impl.cpp
++++ b/hipamd/src/hip_mempool_impl.cpp
+@@ -216,8 +216,6 @@ void* MemoryPool::AllocateMemory(size_t size, Stream* stream, void* dptr) {
+     }
+   } else {
+     dev_ptr = memory->getSvmPtr();
+-    if (!amd::MemObjMap::FindMemObj(dev_ptr))
+-      amd::MemObjMap::AddMemObj(dev_ptr, memory);
+   }
+   // Place the allocated memory into the busy heap
+   ts.AddSafeStream(stream);
+diff --git a/hipamd/src/hip_platform.cpp b/hipamd/src/hip_platform.cpp
+index 40de044b1..fcb3540e5 100644
+--- a/hipamd/src/hip_platform.cpp
++++ b/hipamd/src/hip_platform.cpp
+@@ -185,10 +185,14 @@ void __hipRegisterTexture(
+ }
+ 
+ void __hipUnregisterFatBinary(hip::FatBinaryInfo** modules) {
+-  // By calling hipDeviceSynchronize ensure that all HSA signal handlers
+-  // complete before removeFatBinary
+   static std::once_flag unregister_device_sync;
+-  std::call_once(unregister_device_sync, hipDeviceSynchronize);
++  std::call_once(unregister_device_sync, [](){
++    for (auto& hipDevice : g_devices) {
++      // By synchronizing devices ensure that all HSA signal handlers
++      // complete before removeFatBinary
++      hipDevice->SyncAllStreams(true);
++    }
++  });
+   hipError_t err = PlatformState::instance().removeFatBinary(modules);
+   guarantee((err == hipSuccess), "Cannot Unregister Fat Binary, error:%d", err);
+ }
+diff --git a/hipamd/src/hip_stream.cpp b/hipamd/src/hip_stream.cpp
+index fbd886c36..82f101f4c 100644
+--- a/hipamd/src/hip_stream.cpp
++++ b/hipamd/src/hip_stream.cpp
+@@ -20,6 +20,7 @@
+ 
+ #include <hip/hip_runtime.h>
+ #include "hip_internal.hpp"
++#include "hip_graph_internal.hpp"
+ #include "hip_event.hpp"
+ #include "thread/monitor.hpp"
+ #include "hip_prof_api.h"
+@@ -72,9 +73,10 @@ bool Stream::Create() {
+ }
+ 
+ // ================================================================================================
+-void Stream::Destroy(hip::Stream* stream) {
++void Stream::Destroy(hip::Stream* stream, bool forceDestroy) {
+   stream->device().removeFromActiveQueues(stream);
+   stream->device_->RemoveStream(stream);
++  stream->SetForceDestroy(forceDestroy);
+   stream->release();
+   stream = nullptr;
+ }
+@@ -397,7 +399,7 @@ hipError_t hipStreamDestroy(hipStream_t stream) {
+   if (stream == nullptr) {
+     HIP_RETURN(hipErrorInvalidHandle);
+   }
+-  if (stream == hipStreamPerThread) {
++  if (stream == hipStreamPerThread || stream == hipStreamLegacy) {
+     HIP_RETURN(hipErrorInvalidResourceHandle);
+   }
+   if (!hip::isValid(stream)) {
+@@ -449,6 +451,9 @@ void WaitThenDecrementSignal(hipStream_t stream, hipError_t status, void* user_d
+ 
+ // ================================================================================================
+ hipError_t hipStreamWaitEvent_common(hipStream_t stream, hipEvent_t event, unsigned int flags) {
++  if (flags != hipEventWaitDefault && flags != hipEventWaitExternal) {
++    return hipErrorInvalidValue;
++  }
+   hipError_t status = hipSuccess;
+   if (event == nullptr || !hip::isValid(stream)) {
+     return hipErrorInvalidHandle;
+@@ -464,7 +469,16 @@ hipError_t hipStreamWaitEvent_common(hipStream_t stream, hipEvent_t event, unsig
+   }
+ 
+   hip::Stream* eventStream = reinterpret_cast<hip::Stream*>(eventStreamHandle);
+-  if (eventStream != nullptr && eventStream->IsEventCaptured(event) == true) {
++  if (flags == hipEventWaitExternal) {
++    auto lastCapturedNodes = waitStream->GetLastCapturedNodes();
++    hip::GraphNode* pGraphNode = waitStream->GetCaptureGraph()->AddExternalEventWaitNode(
++                                      (hip::GraphNode*)lastCapturedNodes.data(),
++                                      lastCapturedNodes.size(),
++                                      event);
++    waitStream->SetLastCapturedNode(pGraphNode);
++    return hipSuccess;
++  }
++  else if (eventStream != nullptr && eventStream->IsEventCaptured(event) == true) {
+     ClPrint(amd::LOG_INFO, amd::LOG_API,
+           "[hipGraph] Current capture node StreamWaitEvent on stream : %p, Event %p", stream,
+           event);
+@@ -480,15 +494,13 @@ hipError_t hipStreamWaitEvent_common(hipStream_t stream, hipEvent_t event, unsig
+     }
+     waitStream->AddCrossCapturedNode(e->GetNodesPrevToRecorded());
+   } else {
+-    if (flags != 0) {
+-      return hipErrorInvalidValue;
+-    }
+     if (eventStream != nullptr) {
+       if (eventStream->GetCaptureStatus() == hipStreamCaptureStatusActive) {
+         // If stream is capturing but event is not recorded on event's stream.
+         return hipErrorStreamCaptureIsolation;
+       }
+-      if ((waitStream != nullptr) && (eventStream->DeviceId() == waitStream->DeviceId())) {
++      if ((waitStream != nullptr && stream != hipStreamLegacy) &&
++          (eventStream->DeviceId() == waitStream->DeviceId())) {
+         eventStream->GetDevice()->AddSafeStream(eventStream, waitStream);
+       }
+     }
+diff --git a/hipamd/src/hip_table_interface.cpp b/hipamd/src/hip_table_interface.cpp
+index 6ca09bdb1..4d96eaec0 100644
+--- a/hipamd/src/hip_table_interface.cpp
++++ b/hipamd/src/hip_table_interface.cpp
+@@ -1865,4 +1865,7 @@ hipError_t hipGraphExecBatchMemOpNodeSetParams(hipGraphExec_t hGraphExec,
+                                                const hipBatchMemOpNodeParams* nodeParams) {
+   return hip::GetHipDispatchTable()->hipGraphExecBatchMemOpNodeSetParams_fn(hGraphExec, hNode,
+                                                                             nodeParams);
++}
++hipError_t hipEventRecordWithFlags(hipEvent_t event, hipStream_t stream, unsigned int flags) {
++  return hip::GetHipDispatchTable()->hipEventRecordWithFlags_fn(event, stream, flags);
+ }
+\ No newline at end of file
+diff --git a/hipamd/src/hip_vm.cpp b/hipamd/src/hip_vm.cpp
+index 41e51c7ff..9fbb2db4c 100644
+--- a/hipamd/src/hip_vm.cpp
++++ b/hipamd/src/hip_vm.cpp
+@@ -131,10 +131,6 @@ hipError_t hipMemCreate(hipMemGenericAllocationHandle_t* handle, size_t size,
+   phys_mem_obj->getUserData().data = new hip::GenericAllocation(*phys_mem_obj, size, *prop);
+   *handle = reinterpret_cast<hipMemGenericAllocationHandle_t>(phys_mem_obj->getUserData().data);
+ 
+-  // Remove because the entry is not needed in MemObjMap.
+-  // We save the copy of Phy mem obj in virtual mem obj during mapping.
+-  amd::MemObjMap::RemoveMemObj(ptr);
+-
+   HIP_RETURN(hipSuccess);
+ }
+ 
+diff --git a/opencl/CMakeLists.txt b/opencl/CMakeLists.txt
+index 14ae06c47..901510f43 100644
+--- a/opencl/CMakeLists.txt
++++ b/opencl/CMakeLists.txt
+@@ -110,18 +110,42 @@ if(NOT DEFINED ROCM_PATH)
+ endif()
+ message (STATUS "ROCM Installation path(ROCM_PATH): ${ROCM_PATH}")
+ 
++configure_file(
++  packaging/amdocl64.icd
++  ${CMAKE_BINARY_DIR}/opencl/packages/opencl/${OPENCL_AMD_ICD_FILE}
++  COPYONLY
++)
++install(
++  FILES ${CMAKE_BINARY_DIR}/opencl/packages/opencl/${OPENCL_AMD_ICD_FILE}
++  DESTINATION /${CMAKE_INSTALL_SYSCONFDIR}/OpenCL/vendors
++  COMPONENT binary
++  EXCLUDE_FROM_ALL
++)
++
++configure_file(
++  packaging/rocm-opencl.conf
++  ${CMAKE_BINARY_DIR}/opencl/packages/opencl/10-rocm-opencl.conf
++  COPYONLY
++)
++install(
++  FILES ${CMAKE_BINARY_DIR}/opencl/packages/opencl/10-rocm-opencl.conf
++  DESTINATION /${CMAKE_INSTALL_SYSCONFDIR}/ld.so.conf.d
++  COMPONENT binary
++  EXCLUDE_FROM_ALL
++)
++
+ #Package: rocm-opencl,rocm-opencl-dev/devel,rocm-ocl-icd
+ 
+ set(BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR}/packages/opencl)
+ configure_file(packaging/rocm-opencl.postinst ${BUILD_DIR}/postinst @ONLY)
+-configure_file(packaging/rocm-opencl.prerm ${BUILD_DIR}/prerm @ONLY)
++configure_file(packaging/rocm-opencl.postrm ${BUILD_DIR}/postrm @ONLY)
+ configure_file(packaging/rocm-opencl.rpm_post ${BUILD_DIR}/rpm_post @ONLY)
+ configure_file(packaging/rocm-opencl.rpm_postun ${BUILD_DIR}/rpm_postun @ONLY)
+ 
+ if(BUILD_ICD)
+   set(BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR}/packages/rocm-ocl-icd)
+   configure_file(packaging/rocm-ocl-icd.postinst ${BUILD_DIR}/postinst @ONLY)
+-  configure_file(packaging/rocm-ocl-icd.prerm ${BUILD_DIR}/prerm @ONLY)
++  configure_file(packaging/rocm-ocl-icd.postrm ${BUILD_DIR}/postrm @ONLY)
+   configure_file(packaging/rocm-ocl-icd.rpm_post ${BUILD_DIR}/rpm_post @ONLY)
+   configure_file(packaging/rocm-ocl-icd.rpm_postun ${BUILD_DIR}/rpm_postun @ONLY)
+ endif()
+diff --git a/opencl/packaging/CMakeLists.txt b/opencl/packaging/CMakeLists.txt
+index 1170e57e6..796a8a72e 100644
+--- a/opencl/packaging/CMakeLists.txt
++++ b/opencl/packaging/CMakeLists.txt
+@@ -55,7 +55,7 @@ set(CPACK_DEBIAN_BINARY_PACKAGE_REPLACES "rocm-opencl-icd-loader")
+ set(CPACK_DEBIAN_BINARY_PACKAGE_CONFLICTS "rocm-opencl-icd-loader")
+ set(CPACK_RPM_BINARY_PACKAGE_OBSOLETES "rocm-opencl-icd-loader")
+ 
+-set(CPACK_DEBIAN_BINARY_PACKAGE_CONTROL_EXTRA "${CMAKE_BINARY_DIR}/opencl/packages/opencl/postinst;${CMAKE_BINARY_DIR}/opencl/packages/opencl/prerm")
++set(CPACK_DEBIAN_BINARY_PACKAGE_CONTROL_EXTRA "${CMAKE_BINARY_DIR}/opencl/packages/opencl/postinst;${CMAKE_BINARY_DIR}/opencl/packages/opencl/postrm")
+ # RPM CPACK variables
+ set(CPACK_RPM_BINARY_POST_INSTALL_SCRIPT_FILE "${CMAKE_BINARY_DIR}/opencl/packages/opencl/rpm_post")
+ set(CPACK_RPM_BINARY_POST_UNINSTALL_SCRIPT_FILE "${CMAKE_BINARY_DIR}/opencl/packages/opencl/rpm_postun")
+@@ -123,7 +123,7 @@ if(BUILD_ICD)
+   set(CPACK_ICD_DEB "ON")
+   set(CPACK_DEBIAN_ICD_PACKAGE_NAME "rocm-ocl-icd")
+ 
+-  set(CPACK_DEBIAN_ICD_PACKAGE_CONTROL_EXTRA "${CMAKE_BINARY_DIR}/opencl/packages/rocm-ocl-icd/postinst;${CMAKE_BINARY_DIR}/opencl/packages/rocm-ocl-icd/prerm")
++  set(CPACK_DEBIAN_ICD_PACKAGE_CONTROL_EXTRA "${CMAKE_BINARY_DIR}/opencl/packages/rocm-ocl-icd/postinst;${CMAKE_BINARY_DIR}/opencl/packages/rocm-ocl-icd/postrm")
+   set(CPACK_DEBIAN_ICD_PACKAGE_DEPENDS "rocm-core")
+ 
+ # RPM CPACK variables
+diff --git a/opencl/packaging/amdocl64.icd b/opencl/packaging/amdocl64.icd
+new file mode 100644
+index 000000000..ec1be031e
+--- /dev/null
++++ b/opencl/packaging/amdocl64.icd
+@@ -0,0 +1 @@
++libamdocl64.so
+diff --git a/opencl/packaging/rocm-ocl-icd.postinst b/opencl/packaging/rocm-ocl-icd.postinst
+index e22be0df9..e3ba5d490 100644
+--- a/opencl/packaging/rocm-ocl-icd.postinst
++++ b/opencl/packaging/rocm-ocl-icd.postinst
+@@ -6,7 +6,6 @@ INSTALL_PATH=@CPACK_PACKAGING_INSTALL_PREFIX@
+ 
+ do_ldconfig() {
+   echo ${INSTALL_PATH}/@CMAKE_INSTALL_LIBDIR@ > /@CMAKE_INSTALL_SYSCONFDIR@/ld.so.conf.d/10-rocm-opencl.conf && ldconfig
+-  mkdir -p /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors && (echo libamdocl64.so > /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors/@OPENCL_AMD_ICD_FILE@)
+ }
+ 
+ case "$1" in
+diff --git a/opencl/packaging/rocm-ocl-icd.postrm b/opencl/packaging/rocm-ocl-icd.postrm
+new file mode 100644
+index 000000000..54913a309
+--- /dev/null
++++ b/opencl/packaging/rocm-ocl-icd.postrm
+@@ -0,0 +1,18 @@
++#!/bin/bash
++
++set -e
++
++rm_ldconfig() {
++  ldconfig
++}
++
++case "$1" in
++  purge)
++  ;;
++  remove | upgrade )
++    rm_ldconfig
++  ;;
++  *)
++    exit 0
++  ;;
++esac
+diff --git a/opencl/packaging/rocm-ocl-icd.prerm b/opencl/packaging/rocm-ocl-icd.prerm
+deleted file mode 100644
+index 484304857..000000000
+--- a/opencl/packaging/rocm-ocl-icd.prerm
++++ /dev/null
+@@ -1,19 +0,0 @@
+-#!/bin/bash
+-
+-set -e
+-
+-rm_ldconfig() {
+-  rm -f /@CMAKE_INSTALL_SYSCONFDIR@/ld.so.conf.d/10-rocm-opencl.conf && ldconfig
+-  rm -f /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors/@OPENCL_AMD_ICD_FILE@
+-}
+-
+-case "$1" in
+-  purge)
+-  ;;
+-  remove | upgrade )
+-    rm_ldconfig
+-  ;;
+-  *)
+-    exit 0
+-  ;;
+-esac
+diff --git a/opencl/packaging/rocm-ocl-icd.rpm_post b/opencl/packaging/rocm-ocl-icd.rpm_post
+index b467f63ba..8c7657e58 100644
+--- a/opencl/packaging/rocm-ocl-icd.rpm_post
++++ b/opencl/packaging/rocm-ocl-icd.rpm_post
+@@ -1,4 +1,3 @@
+ INSTALL_PATH=@CPACK_PACKAGING_INSTALL_PREFIX@
+ 
+ echo ${INSTALL_PATH}/@CMAKE_INSTALL_LIBDIR@ > /@CMAKE_INSTALL_SYSCONFDIR@/ld.so.conf.d/10-rocm-opencl.conf && ldconfig
+-mkdir -p /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors && (echo libamdocl64.so > /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors/@OPENCL_AMD_ICD_FILE@)
+diff --git a/opencl/packaging/rocm-ocl-icd.rpm_postun b/opencl/packaging/rocm-ocl-icd.rpm_postun
+index f3655dfe9..48056b8f1 100644
+--- a/opencl/packaging/rocm-ocl-icd.rpm_postun
++++ b/opencl/packaging/rocm-ocl-icd.rpm_postun
+@@ -1,8 +1,5 @@
+ if [ $1 -eq 0 ]; then
+-  # Remove rocm-opencl.conf during remove/uninstall operation
+-  rm -f /@CMAKE_INSTALL_SYSCONFDIR@/ld.so.conf.d/10-rocm-opencl.conf && ldconfig
++  # ldconfig during remove/uninstall operation. No ldconfig during upgrade
++  ldconfig
+ fi
+-# Remove icd file for uninstall and upgrade operation
+-rm -f /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors/@OPENCL_AMD_ICD_FILE@
+-
+ 
+diff --git a/opencl/packaging/rocm-opencl.conf b/opencl/packaging/rocm-opencl.conf
+new file mode 100644
+index 000000000..ad7268343
+--- /dev/null
++++ b/opencl/packaging/rocm-opencl.conf
+@@ -0,0 +1,3 @@
++# Default value.
++# It will be replaced by package script, such as postinst, during installation.
++/opt/rocm/lib
+diff --git a/opencl/packaging/rocm-opencl.postinst b/opencl/packaging/rocm-opencl.postinst
+index 337ceaa9d..930be229b 100644
+--- a/opencl/packaging/rocm-opencl.postinst
++++ b/opencl/packaging/rocm-opencl.postinst
+@@ -7,7 +7,6 @@ INSTALL_PATH=@CPACK_PACKAGING_INSTALL_PREFIX@
+ do_ldconfig() {
+   echo ${INSTALL_PATH}/@CMAKE_INSTALL_LIBDIR@ > /@CMAKE_INSTALL_SYSCONFDIR@/ld.so.conf.d/10-rocm-opencl.conf && ldconfig
+ 
+-  mkdir -p /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors && (echo libamdocl64.so > /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors/@OPENCL_AMD_ICD_FILE@)
+ }
+ 
+ case "$1" in
+diff --git a/opencl/packaging/rocm-opencl.postrm b/opencl/packaging/rocm-opencl.postrm
+new file mode 100644
+index 000000000..54913a309
+--- /dev/null
++++ b/opencl/packaging/rocm-opencl.postrm
+@@ -0,0 +1,18 @@
++#!/bin/bash
++
++set -e
++
++rm_ldconfig() {
++  ldconfig
++}
++
++case "$1" in
++  purge)
++  ;;
++  remove | upgrade )
++    rm_ldconfig
++  ;;
++  *)
++    exit 0
++  ;;
++esac
+diff --git a/opencl/packaging/rocm-opencl.prerm b/opencl/packaging/rocm-opencl.prerm
+deleted file mode 100644
+index 484304857..000000000
+--- a/opencl/packaging/rocm-opencl.prerm
++++ /dev/null
+@@ -1,19 +0,0 @@
+-#!/bin/bash
+-
+-set -e
+-
+-rm_ldconfig() {
+-  rm -f /@CMAKE_INSTALL_SYSCONFDIR@/ld.so.conf.d/10-rocm-opencl.conf && ldconfig
+-  rm -f /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors/@OPENCL_AMD_ICD_FILE@
+-}
+-
+-case "$1" in
+-  purge)
+-  ;;
+-  remove | upgrade )
+-    rm_ldconfig
+-  ;;
+-  *)
+-    exit 0
+-  ;;
+-esac
+diff --git a/opencl/packaging/rocm-opencl.rpm_post b/opencl/packaging/rocm-opencl.rpm_post
+index b467f63ba..8c7657e58 100644
+--- a/opencl/packaging/rocm-opencl.rpm_post
++++ b/opencl/packaging/rocm-opencl.rpm_post
+@@ -1,4 +1,3 @@
+ INSTALL_PATH=@CPACK_PACKAGING_INSTALL_PREFIX@
+ 
+ echo ${INSTALL_PATH}/@CMAKE_INSTALL_LIBDIR@ > /@CMAKE_INSTALL_SYSCONFDIR@/ld.so.conf.d/10-rocm-opencl.conf && ldconfig
+-mkdir -p /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors && (echo libamdocl64.so > /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors/@OPENCL_AMD_ICD_FILE@)
+diff --git a/opencl/packaging/rocm-opencl.rpm_postun b/opencl/packaging/rocm-opencl.rpm_postun
+index f3655dfe9..48056b8f1 100644
+--- a/opencl/packaging/rocm-opencl.rpm_postun
++++ b/opencl/packaging/rocm-opencl.rpm_postun
+@@ -1,8 +1,5 @@
+ if [ $1 -eq 0 ]; then
+-  # Remove rocm-opencl.conf during remove/uninstall operation
+-  rm -f /@CMAKE_INSTALL_SYSCONFDIR@/ld.so.conf.d/10-rocm-opencl.conf && ldconfig
++  # ldconfig during remove/uninstall operation. No ldconfig during upgrade
++  ldconfig
+ fi
+-# Remove icd file for uninstall and upgrade operation
+-rm -f /@CMAKE_INSTALL_SYSCONFDIR@/OpenCL/vendors/@OPENCL_AMD_ICD_FILE@
+-
+ 
+diff --git a/rocclr/device/comgrctx.cpp b/rocclr/device/comgrctx.cpp
+index bfc92e4b1..9b5249abb 100644
+--- a/rocclr/device/comgrctx.cpp
++++ b/rocclr/device/comgrctx.cpp
+@@ -52,16 +52,16 @@ bool Comgr::LoadLib(bool is_versioned) {
+     comgr_versioned_name = kComgrPrefix + major_version + minor_version + std::string(".dll");
+ 
+     static const char* comgr_lib_name =
+-    LP64_SWITCH(WINDOWS_SWITCH("amd_comgr32.dll", "libamd_comgr32.so"),
+-                WINDOWS_SWITCH(comgr_versioned_name.c_str(), "libamd_comgr.so"));
++    LP64_SWITCH(WINDOWS_SWITCH("amd_comgr32.dll", "libamd_comgr32.so.3"),
++                WINDOWS_SWITCH(comgr_versioned_name.c_str(), "libamd_comgr.so.3"));
+     cep_.handle = Os::loadLibrary(comgr_lib_name);
+ #endif
+   } else {
+     std::string comgr_major_dll = "amd_comgr_" +
+                                   std::to_string(AMD_COMGR_INTERFACE_VERSION_MAJOR) + ".dll";
+     static const char* comgr_lib_name =
+-    LP64_SWITCH(WINDOWS_SWITCH("amd_comgr32.dll", "libamd_comgr32.so"),
+-                WINDOWS_SWITCH(comgr_major_dll.c_str(), "libamd_comgr.so"));
++    LP64_SWITCH(WINDOWS_SWITCH("amd_comgr32.dll", "libamd_comgr32.so.3"),
++                WINDOWS_SWITCH(comgr_major_dll.c_str(), "libamd_comgr.so.3"));
+     cep_.handle = Os::loadLibrary(comgr_lib_name);
+   }
+   if (nullptr == cep_.handle) {
+diff --git a/rocclr/device/device.cpp b/rocclr/device/device.cpp
+index 9aebaf9a4..be6607930 100644
+--- a/rocclr/device/device.cpp
++++ b/rocclr/device/device.cpp
+@@ -375,7 +375,9 @@ amd::Memory* MemObjMap::FindMemObj(const void* k, size_t* offset) {
+ 
+   --it;
+   amd::Memory* mem = it->second;
+-  if (key >= it->first && key < (it->first + mem->getSize())) {
++  size_t mem_size = (mem->getMemFlags() & ROCCLR_MEM_PHYMEM) ? sizeof(mem->getUserData().hsa_handle)
++                                                             : mem->getSize();
++  if (key >= it->first && key < (it->first + mem_size)) {
+     if (offset != nullptr) {
+       *offset = key - it->first;
+     }
+diff --git a/rocclr/device/devkernel.cpp b/rocclr/device/devkernel.cpp
+index 9bb6039e3..1bb97cb39 100644
+--- a/rocclr/device/devkernel.cpp
++++ b/rocclr/device/devkernel.cpp
+@@ -582,7 +582,9 @@ static amd_comgr_status_t populateKernelMetaV3(const amd_comgr_metadata_node_t k
+       kernel->SetKernelKind(buf);
+       break;
+     case KernelField::WgpMode:
+-      kernel->SetWGPMode(buf.compare("true") == 0);
++      // The compiler currently serializes this boolean field as "0"/"1" instead
++      // of "false"/"true"; consider both "true" and "1" truthy values.
++      kernel->SetWGPMode(buf.compare("true") == 0 || buf.compare("1") == 0);
+       break;
+     case KernelField::UniformWrokGroupSize:
+       kernel->setUniformWorkGroupSize(buf.compare("1") == 0);
+diff --git a/rocclr/device/rocm/rocblit.cpp b/rocclr/device/rocm/rocblit.cpp
+index 16fc442f2..5c35ac91e 100644
+--- a/rocclr/device/rocm/rocblit.cpp
++++ b/rocclr/device/rocm/rocblit.cpp
+@@ -1698,14 +1698,14 @@ bool KernelBlitManager::readBuffer(device::Memory& srcMemory, void* dstHost,
+       constexpr bool kAttachSignal = true;
+       while (totalSize > 0) {
+         copySize = std::min(totalSize, maxStagedXferSize);
+-        srcAddr += stagedCopyOffset;
++        address currentSrcAddr = srcAddr + stagedCopyOffset;
+         ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Blit staging D2H copy stg buf=%p, src=%p, "
+-                "dstOrigin=0x%x, size=%zu", xferBufAddr, srcAddr, dstOrigin[0], copySize);
++                "dstOrigin=0x%x, size=%zu", xferBufAddr, currentSrcAddr, dstOrigin[0], copySize);
+         // Flush caches for coherency after the copy as we need to std::memcpy
+         // from staging buffer to unpinned dst. Also attach a signal to the dispatch packet
+         // itself that we can wait on without extra barrier packet.
+         gpu().addSystemScope();
+-        result = shaderCopyBuffer(xferBufAddr, srcAddr, dstOrigin, origin, copySize,
++        result = shaderCopyBuffer(xferBufAddr, currentSrcAddr, dstOrigin, origin, copySize,
+                                   entire, dev().settings().limit_blit_wg_, copyMetadata,
+                                   kAttachSignal);
+         if (!result) {
+@@ -1828,15 +1828,15 @@ bool KernelBlitManager::writeBuffer(const void* srcHost, device::Memory& dstMemo
+         copySize = std::min(totalSize, maxStagedXferSize);
+         // Get an address from managed staging buffer
+         address stagingBuffer = gpu().Staging().Acquire(std::min(copySize, maxStagedXferSize));
+-        dstAddr += stagedCopyOffset;
++        address currentDstAddr = dstAddr + stagedCopyOffset;
+         ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "memcpy stg buf=%p, host src=%p, size=%zu",
+                 stagingBuffer, (void*)(srcAddr + stagedCopyOffset), copySize);
+         memcpy(stagingBuffer, srcAddr + stagedCopyOffset, copySize);
+         ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Blit staging H2D copy dst=%p, stg buf=%p, "
+-                "dstOrigin=0x%x, size=%zu", dstAddr, stagingBuffer, origin[0], copySize);
++                "dstOrigin=0x%x, size=%zu", currentDstAddr, stagingBuffer, origin[0], copySize);
+         // No cache flush is needed here as we use a staging buffer, and the acquire logic
+         // ensures that the cacheline is different and re-used only when L2 is flushed
+-        result = shaderCopyBuffer(dstAddr, stagingBuffer,
++        result = shaderCopyBuffer(currentDstAddr, stagingBuffer,
+                                   origin, srcOrigin, copySize,
+                                   entire, dev().settings().limit_blit_wg_, copyMetadata);
+         if (!result) {
+diff --git a/rocclr/device/rocm/rocdevice.cpp b/rocclr/device/rocm/rocdevice.cpp
+index 811381385..41b6419db 100644
+--- a/rocclr/device/rocm/rocdevice.cpp
++++ b/rocclr/device/rocm/rocdevice.cpp
+@@ -2367,8 +2367,9 @@ void* Device::deviceLocalAlloc(size_t size, bool atomics, bool pseudo_fine_grain
+   }
+ 
+   void* ptr = nullptr;
+-  hsa_status_t stat = hsa_amd_memory_pool_allocate(pool, size, 0, &ptr);
+-  ClPrint(amd::LOG_DEBUG, amd::LOG_MEM, "Allocate hsa device memory %p, size 0x%zx", ptr, size);
++  hsa_status_t stat = hsa_amd_memory_pool_allocate(pool, size, hsa_mem_flags, &ptr);
++  ClPrint(amd::LOG_DEBUG, amd::LOG_MEM,
++      "Allocate hsa device memory %p, size 0x%zx, hsa_mem_flags 0x%xh", ptr, size, hsa_mem_flags);
+   if (stat != HSA_STATUS_SUCCESS) {
+     LogError("Fail allocation local memory");
+     return nullptr;
+@@ -3554,6 +3555,10 @@ bool Device::IsValidAllocation(const void* dev_ptr, size_t size, hsa_amd_pointer
+     LogError("hsa_amd_pointer_info() failed");
+   }
+ 
++  if (ptr_info->type == HSA_EXT_POINTER_TYPE_RESERVED_ADDR) {
++    return false;
++  }
++
+   // Return false for pinned memory. A true return may result in a race because
+   // ROCclr may attempt to do a pin/copy/unpin underneath in a multithreaded environment
+   if (ptr_info->type == HSA_EXT_POINTER_TYPE_LOCKED) {
+diff --git a/rocclr/device/rocm/rocvirtual.cpp b/rocclr/device/rocm/rocvirtual.cpp
+index f81b04862..cb170365d 100755
+--- a/rocclr/device/rocm/rocvirtual.cpp
++++ b/rocclr/device/rocm/rocvirtual.cpp
+@@ -235,11 +235,13 @@ bool HsaAmdSignalHandler(hsa_signal_value_t value, void* arg) {
+   // Reset last used SDMA engine mask
+   gpu->setLastUsedSdmaEngine(0);
+ 
++  bool isBlocking = ts->GetBlocking();
++
+   // Update the batch, since signal is complete
+   gpu->updateCommandsState(ts->command().GetBatchHead());
+ 
+   // Reset API callback signal. It will release AQL queue and start commands processing
+-  if (callback_signal.handle != 0) {
++  if (callback_signal.handle != 0 && isBlocking) {
+     hsa_signal_subtract_relaxed(callback_signal, 1);
+   }
+ 
+@@ -514,10 +516,13 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(
+         // If API callback is enabled, then use a blocking signal for AQL queue.
+         // HSA signal will be acquired in SW and released after HSA signal callback
+         if (ts->command().Callback() != nullptr) {
+-          ts->SetCallbackSignal(prof_signal->signal_);
++          bool blocking = ts->command().Callback()->blocking_;
++          ts->SetCallbackSignal(prof_signal->signal_, blocking);
+           // Blocks AQL queue from further processing
+-          hsa_signal_add_relaxed(prof_signal->signal_, 1);
+-          init_value += 1;
++          if (blocking) {
++            hsa_signal_add_relaxed(prof_signal->signal_, 1);
++            init_value += 1;
++          }
+         }
+         gpu_.QueuedAsyncHandlers()++;
+         hsa_status_t result = hsa_amd_signal_async_handler(prof_signal->signal_,
+diff --git a/rocclr/device/rocm/rocvirtual.hpp b/rocclr/device/rocm/rocvirtual.hpp
+index 2db2b5566..63b271067 100644
+--- a/rocclr/device/rocm/rocvirtual.hpp
++++ b/rocclr/device/rocm/rocvirtual.hpp
+@@ -97,8 +97,9 @@ class Timestamp : public amd::ReferenceCountedObject {
+   std::vector<ProfilingSignal*> signals_; //!< The list of all signals, associated with the TS
+   hsa_signal_t callback_signal_;  //!< Signal associated with a callback for possible later update
+   amd::Monitor  lock_;            //!< Serialize timestamp update
+-  bool        accum_ena_ = false; //!< If TRUE then the accumulation of execution times has started
+-  bool        hasHwProfiling_ = false; //!< If TRUE then HwProfiling is enabled for the command
++  bool accum_ena_ = false;        //!< If TRUE then the accumulation of execution times has started
++  bool hasHwProfiling_ = false;   //!< If TRUE then HwProfiling is enabled for the command
++  bool blocking_ = true;          //!< If TRUE callback is blocking
+ 
+   Timestamp(const Timestamp&) = delete;
+   Timestamp& operator=(const Timestamp&) = delete;
+@@ -162,12 +163,15 @@ class Timestamp : public amd::ReferenceCountedObject {
+   VirtualGPU* gpu() const { return gpu_; }
+ 
+   //! Updates the callback signal
+-  void SetCallbackSignal(hsa_signal_t callback_signal) {
++  void SetCallbackSignal(hsa_signal_t callback_signal, bool blocking = true) {
+     callback_signal_ = callback_signal;
++    blocking_ = blocking;
+   }
+-
+   //! Returns the callback signal
+   hsa_signal_t GetCallbackSignal() const { return callback_signal_; }
++
++  //! Return if callback is blocking/non-blocking
++  bool GetBlocking() { return blocking_; }
+ };
+ 
+ class VirtualGPU : public device::VirtualDevice {
+diff --git a/rocclr/platform/command.cpp b/rocclr/platform/command.cpp
+index 363012e60..c77bfa2ac 100644
+--- a/rocclr/platform/command.cpp
++++ b/rocclr/platform/command.cpp
+@@ -190,10 +190,11 @@ bool Event::resetStatus(int32_t status) {
+ }
+ 
+ // ================================================================================================
+-bool Event::setCallback(int32_t status, Event::CallBackFunction callback, void* data) {
++bool Event::setCallback(int32_t status, Event::CallBackFunction callback, void* data,
++                        bool blocking) {
+   assert(status >= CL_COMPLETE && status <= CL_QUEUED && "invalid status");
+ 
+-  CallBackEntry* entry = new CallBackEntry(status, callback, data);
++  CallBackEntry* entry = new CallBackEntry(status, callback, data, blocking);
+   if (entry == NULL) {
+     return false;
+   }
+diff --git a/rocclr/platform/command.hpp b/rocclr/platform/command.hpp
+index 395e6bc82..6e5b5f6ed 100644
+--- a/rocclr/platform/command.hpp
++++ b/rocclr/platform/command.hpp
+@@ -72,10 +72,10 @@ class Event : public RuntimeObject {
+ 
+     std::atomic<CallBackFunction> callback_;  //!< callback function pointer.
+     void* data_;                              //!< user data passed to the callback function.
+-    int32_t status_;                           //!< execution status triggering the callback.
+-
+-    CallBackEntry(int32_t status, CallBackFunction callback, void* data)
+-        : callback_(callback), data_(data), status_(status) {}
++    int32_t status_;                          //!< execution status triggering the callback.
++    bool blocking_;                           //!< TRUE if callback is blocking
++    CallBackEntry(int32_t status, CallBackFunction callback, void* data, bool blocking)
++        : callback_(callback), data_(data), status_(status), blocking_(blocking) {}
+   };
+ 
+  public:
+@@ -173,7 +173,7 @@ class Event : public RuntimeObject {
+   int32_t status() const { return status_.load(std::memory_order_relaxed); }
+ 
+   //! Insert the given \a callback into the callback stack.
+-  bool setCallback(int32_t status, CallBackFunction callback, void* data);
++  bool setCallback(int32_t status, CallBackFunction callback, void* data, bool blocking = true);
+ 
+   /*! \brief Set the event status.
+    *
+diff --git a/rocclr/platform/commandqueue.cpp b/rocclr/platform/commandqueue.cpp
+index 2ff38e89a..703401673 100644
+--- a/rocclr/platform/commandqueue.cpp
++++ b/rocclr/platform/commandqueue.cpp
+@@ -57,8 +57,9 @@ HostQueue::HostQueue(Context& context, Device& device, cl_command_queue_properti
+ }
+ 
+ bool HostQueue::terminate() {
++  // incase of force destroy skip checking on the last command
+   if (AMD_DIRECT_DISPATCH) {
+-    if (vdev() != nullptr) {
++    if (!forceDestroy_ && vdev() != nullptr) {
+       // If the queue still has the last command, then wait and release it
+       // We must be in protected way to get last command when calling
+       // awaitCompletion() where lastCommand will be released and possibly
+diff --git a/rocclr/platform/commandqueue.hpp b/rocclr/platform/commandqueue.hpp
+index aa70631c6..804a56a10 100644
+--- a/rocclr/platform/commandqueue.hpp
++++ b/rocclr/platform/commandqueue.hpp
+@@ -294,6 +294,9 @@ class HostQueue : public CommandQueue {
+   //! Get queue status
+   bool GetQueueStatus() { return isActive_; }
+ 
++  //! Set the force destory to terminate queue without checking last command
++  void SetForceDestroy(bool forceDestroy) { forceDestroy_ = forceDestroy; }
++
+   uint64_t getQueueID() {
+     return thread_.vdev()->getQueueID();
+   }
+@@ -305,6 +308,7 @@ private:
+ 
+   //! True if this command queue is active
+   bool isActive_;
++  bool forceDestroy_ = false;  //!< Destroy the queue in the current state
+ };
+ 
+ class DeviceQueue : public CommandQueue {

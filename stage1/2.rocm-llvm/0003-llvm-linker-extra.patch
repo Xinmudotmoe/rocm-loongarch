@@ -1,0 +1,12 @@
+diff --git a/clang/tools/clang-linker-wrapper/ClangLinkerWrapper.cpp b/clang/tools/clang-linker-wrapper/ClangLinkerWrapper.cpp
+index c92590581a64..b132c49de64a 100644
+--- a/clang/tools/clang-linker-wrapper/ClangLinkerWrapper.cpp
++++ b/clang/tools/clang-linker-wrapper/ClangLinkerWrapper.cpp
+@@ -598,6 +598,7 @@ Expected<StringRef> linkDevice(ArrayRef<StringRef> InputFiles,
+   case Triple::spirv64:
+   case Triple::systemz:
+   case Triple::loongarch64:
++  case Triple::riscv64:
+     return generic::clang(InputFiles, Args);
+   default:
+     return createStringError(Triple.getArchName() +

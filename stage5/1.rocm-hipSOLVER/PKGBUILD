@@ -1,14 +1,14 @@
 pkgbase='rocm-hipSOLVER'
 pkgname=('rocm-hipSOLVER')
-pkgver=6.4.2
-pkgrel=642000
+pkgver=7.0.2
+pkgrel=702000
 pkgdesc="rocm-core is a utility which can be used to get ROCm release version."
 arch=('loong64' 'x86_64')
 license=('MIT')
 url="https://github.com/ROCm/ROCT-Thunk-Interface.git"
 
 source=(
-    "git+https://github.com/ROCm/hipSOLVER.git#tag=rocm-$pkgver"
+    "git+https://github.com/ROCm/rocm-libraries.git#tag=rocm-$pkgver"
 )
 b2sums=('SKIP')
 depends=(
@@ -44,7 +44,7 @@ EOF
 
   mkdir build || true
   cd build
-  cmake ../hipSOLVER \
+  cmake ../rocm-libraries/projects/hipsolver \
    -DCMAKE_INSTALL_PREFIX=/opt/rocm-${pkgver} \
    -DCMAKE_TOOLCHAIN_FILE=$PWD/../toolchain.cmake \
    -DBUILD_WITH_SPARSE=OFF \

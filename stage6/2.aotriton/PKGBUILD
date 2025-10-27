@@ -1,0 +1,103 @@
+pkgbase='rocm-aotriton'
+pkgname=('rocm-aotriton')
+pkgver=6.4.0
+pkgrel=640000
+pkgdesc="rocm-core is a utility which can be used to get ROCm release version."
+arch=('loong64' 'x86_64')
+license=('MIT')
+url="https://github.com/ROCm/ROCT-Thunk-Interface.git"
+
+AOTRITON_VERSION=0.9.2b
+
+source=(
+    "git+https://github.com/ROCm/aotriton#tag=$AOTRITON_VERSION"
+    "git+https://github.com/llvm/llvm-project"
+    "git+https://github.com/ROCmSoftwarePlatform/triton#branch=aotriton/0.8-1"
+    "git+https://github.com/graphitemaster/incbin"
+    "git+https://github.com/pybind/pybind11"
+    "aotriton.patch"
+    "triton.patch"
+    "llvm.patch"
+)
+b2sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+depends=("rocm-clr=${pkgver}")
+ROCM_HOME=/opt/rocm-${pkgver}/
+PATH=/opt/rocm-${pkgver}/bin:$ROCM_HOME/lib/llvm/bin/:$PATH
+export CC=$ROCM_HOME/lib/llvm/bin/clang
+export CXX=$ROCM_HOME/lib/llvm/bin/clang++
+export CMAKE_C_COMPILER=$CC
+export CMAKE_CXX_COMPILER=$CXX
+
+prepare() {
+ cd llvm-project
+  cat ../triton/cmake/llvm-hash.txt | xargs git checkout
+  git apply ../llvm.patch
+ cd ..
+ rm -rf aotriton/third_party/triton || true
+ ln -s $PWD/triton aotriton/third_party/triton
+ rm -rf aotriton/third_party/incbin || true
+ ln -s $PWD/incbin aotriton/third_party/incbin
+ rm -rf aotriton/third_party/pybind11 || true
+ ln -s $PWD/pybind11 aotriton/third_party/pybind11
+ cd triton
+    git apply ../triton.patch
+ cd ..
+ cd aotriton
+    git apply ../aotriton.patch
+ cd ..
+ mkdir llvm-build
+ cd llvm-build
+  cmake -GNinja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS="$EXT_CFLAGS" \
+        -DCMAKE_CXX_FLAGS="$EXT_CFLAGS" \
+        -DCMAKE_INSTALL_PREFIX="$PWD/../llvm-usr" \
+        -DLLVM_BUILD_UTILS=ON \
+        -DLLVM_BUILD_TOOLS=ON \
+        -DLLVM_ENABLE_ASSERTIONS=OFF \
+        -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+        -DLLVM_ENABLE_PROJECTS="mlir;llvm" \
+        -DLLVM_INSTALL_UTILS=ON \
+        -DLLVM_TARGETS_TO_BUILD="host;AMDGPU" \
+        -DLLVM_ABI_BREAKING_CHECKS=FORCE_OFF \
+        -DLLVM_ENABLE_PIC=ON \
+        ../llvm-project/llvm
+ cd ..
+}
+build() {
+ cd llvm-build
+  ninja all install
+ cd ..
+ mkdir build || true
+ cd build
+   NDEBUG=1 cmake ../aotriton  -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DMLIR_TABLEGEN=$PWD/../llvm-usr/bin/mlir-tblgen \
+    -DCMAKE_C_COMPILER=/opt/rocm-${pkgver}/lib/llvm/bin/clang \
+    -DCMAKE_CXX_COMPILER=/opt/rocm-${pkgver}/lib/llvm/bin/clang++ \
+    -DCMAKE_C_FLAGS="$EXT_CFLAGS" \
+    -DCMAKE_CXX_FLAGS="$EXT_CFLAGS" \
+    -DCMAKE_INSTALL_PREFIX=$ROCM_HOME/aotriton \
+    -DTARGET_GPUS="Navi31;RX9070XT"
+   ninja
+  
+}
+
+check() {
+#  cd "ROCm-CompilerSupport"
+#  cd build
+#  make ctest
+echo
+}
+
+#packaging() {
+
+#}
+package() {
+  cd build
+  find .|grep cmake_install.cmake|xargs sed -i "s!file(INSTALL DESTINATION \"/opt/rocm-$pkgver/aotriton!file(INSTALL DESTINATION \"$pkgdir/opt/rocm-$pkgver/aotriton!g"
+  find .|grep cmake_install.cmake|xargs sed -i "s!\$ENV{DESTDIR}/opt/rocm-$pkgver/aotriton/!$pkgdir/opt/rocm-$pkgver/aotriton/!g"
+# DESTDIR="$pkgdir" 
+  cmake --install . --prefix="$pkgdir/opt/rocm-${pkgver}/aotriton/"
+  find  "$pkgdir/opt/rocm-${pkgver}/aotriton/lib/" -maxdepth 1|grep .so|xargs  patchelf --add-rpath /opt/rocm-$pkgver/lib64 
+}

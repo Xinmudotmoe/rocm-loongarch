@@ -1,7 +1,7 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
+diff --git a/projects/composablekernel/CMakeLists.txt b/projects/composablekernel/CMakeLists.txt
 index 1fe1bc91d..075b87b31 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
+--- a/projects/composablekernel/CMakeLists.txt
++++ b/projects/composablekernel/CMakeLists.txt
 @@ -24,7 +24,7 @@ endif()
  set(version 1.1.0)
  # Check support for CUDA/HIP in Cmake
@@ -161,8 +161,8 @@ index 1fe1bc91d..075b87b31 100644
  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 diff --git a/example/CMakeLists.txt b/example/CMakeLists.txt
 index bcb62df62..365b1a56a 100644
---- a/example/CMakeLists.txt
-+++ b/example/CMakeLists.txt
+--- a/projects/composablekernel/example/CMakeLists.txt
++++ b/projects/composablekernel/example/CMakeLists.txt
 @@ -119,7 +119,7 @@ function(add_example_executable EXAMPLE_NAME FILE_NAME)
          add_test(NAME ${EXAMPLE_NAME} COMMAND $<TARGET_FILE:${EXAMPLE_NAME}> ${ARGN})
          set_property(TARGET ${EXAMPLE_NAME} PROPERTY HIP_ARCHITECTURES ${EX_TARGETS} )
@@ -172,10 +172,10 @@ index bcb62df62..365b1a56a 100644
          rocm_install(TARGETS ${EXAMPLE_NAME} COMPONENT examples)
          set(result 0)
      endif()
-diff --git a/library/src/tensor_operation_instance/gpu/CMakeLists.txt b/library/src/tensor_operation_instance/gpu/CMakeLists.txt
+diff --git a/projects/composablekernel/library/src/tensor_operation_instance/gpu/CMakeLists.txt b/projects/composablekernel/library/src/tensor_operation_instance/gpu/CMakeLists.txt
 index 5b88d5f25..2ef26ee0b 100755
---- a/library/src/tensor_operation_instance/gpu/CMakeLists.txt
-+++ b/library/src/tensor_operation_instance/gpu/CMakeLists.txt
+--- a/projects/composablekernel/library/src/tensor_operation_instance/gpu/CMakeLists.txt
++++ b/projects/composablekernel/library/src/tensor_operation_instance/gpu/CMakeLists.txt
 @@ -159,7 +159,6 @@ function(add_instance_library INSTANCE_NAME)
          endif()
  
@@ -184,10 +184,10 @@ index 5b88d5f25..2ef26ee0b 100755
          set(result 0)
          message("add_instance_library ${INSTANCE_NAME}")
      else()
-diff --git a/library/src/utility/CMakeLists.txt b/library/src/utility/CMakeLists.txt
+diff --git a/projects/composablekernel/library/src/utility/CMakeLists.txt b/projects/composablekernel/library/src/utility/CMakeLists.txt
 index 28883efef..1573c84cb 100644
---- a/library/src/utility/CMakeLists.txt
-+++ b/library/src/utility/CMakeLists.txt
+--- a/projects/composablekernel/library/src/utility/CMakeLists.txt
++++ b/projects/composablekernel/library/src/utility/CMakeLists.txt
 @@ -31,4 +31,3 @@ rocm_install(
      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/composable_kernel
  )
